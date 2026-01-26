@@ -1,0 +1,11 @@
+[package]
+name = "libshvgate-rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+futures = "0.3.31"
+log = "0.4.29"
+shvclient = { version = "0.21.10", features = ["tokio"] }
+tokio = { version = "1.49.0", features = ["macros", "time", "rt-multi-thread", "fs", "net"] }
+url = "2.5.8"
