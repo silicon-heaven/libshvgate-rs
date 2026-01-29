@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use shvclient::clientnode::RpcError;
@@ -5,37 +6,34 @@ use shvclient::shvproto::RpcValue;
 use shvclient::shvrpc::client::ClientConfig;
 use shvclient::{ClientCommandSender, ClientEventsReceiver};
 
-use self::journal::{JournalConfig, ShvJournal};
+use self::data::{JournalConfig, GateData};
 use self::tree::{ShvTree, ShvTreeDefinition};
 
-use shvclient::shvrpc::{Result as ShvRpcResult};
+use shvclient::shvrpc::RpcMessage;
+pub(crate) use shvclient::shvrpc::Result as ShvRpcResult;
 
-mod journal;
+mod data;
 mod tree;
 
+
+pub(crate) fn send_rpc_signal(
+    client_cmd_tx: &ClientCommandSender,
+    path: impl AsRef<str>,
+    signal: impl AsRef<str>,
+    value: RpcValue
+) -> ShvRpcResult<()>
+{
+    let (path, signal) = (path.as_ref(), signal.as_ref());
+    client_cmd_tx
+        .send_message(RpcMessage::new_signal(path, signal, Some(value)))
+        .map_err(|err| format!("Cannot send `{path}:{signal}` notification: {err}").into())
+}
+
 pub struct ShvGate {
-    data: Arc<ShvGateData>,
+    data: Arc<GateData>,
     app_rpc_handler: Option<tree::RpcHandler>,
 }
 
-pub struct ShvGateData {
-    pub(crate) tree: ShvTree,
-    pub(crate) journal: ShvJournal,
-}
-
-impl ShvGateData {
-    pub async fn update_value(&self, path: &str, new_value: RpcValue) -> Option<bool> {
-        let res = self.tree.update(path, &new_value);
-        match res {
-            None => log::error!("Cannot update value, path `{path}` "),
-            Some(updated) => if updated {
-                self.journal.append(path, new_value).await;
-                // TODO: send notification
-            },
-        }
-        res
-    }
-}
 
 pub struct ShvGateConfig {
     tree: ShvTreeDefinition,
@@ -43,19 +41,16 @@ pub struct ShvGateConfig {
 }
 
 impl ShvGate {
-    pub fn new(config: ShvGateConfig) -> Self {
+    pub async fn new(config: ShvGateConfig) -> Self {
         Self {
-            data: Arc::new(ShvGateData {
-                tree: ShvTree::from_definition(config.tree),
-                journal: ShvJournal::new(config.journal),
-            }),
+            data: Arc::new(GateData::new(config.journal, ShvTree::from_definition(config.tree)).await.unwrap()),
             app_rpc_handler: None,
         }
     }
 
-    pub fn method_call_handler_fn<F, Fut, Ret>(mut self, handler: F) -> Self
+    pub fn with_method_call_handler<F, Fut, Ret>(mut self, handler: F) -> Self
         where
-            F: Fn(String, String, Option<RpcValue>, ClientCommandSender, Arc<ShvGateData>) -> Fut + Sync + Send + 'static,
+            F: Fn(String, String, Option<RpcValue>, ClientCommandSender, Arc<GateData>) -> Fut + Sync + Send + 'static,
             Fut: Future<Output = Result<Ret, RpcError>> + Send + 'static,
             Ret: Into<RpcValue>,
     {
@@ -70,7 +65,7 @@ impl ShvGate {
 
     pub async fn run<H>(self, client_config: &ClientConfig, on_client_start: H) -> ShvRpcResult<()>
     where
-        H: FnOnce(ClientCommandSender, ClientEventsReceiver, Arc<ShvGateData>)
+        H: FnOnce(ClientCommandSender, ClientEventsReceiver, Arc<GateData>)
     {
         let rpc_handler = {
             let gate_data = self.data.clone();
@@ -89,11 +84,26 @@ impl ShvGate {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn init_logger() {
+    use std::sync::Once;
+
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        use simple_logger::SimpleLogger;
+
+        SimpleLogger::new()
+            .with_level(log::LevelFilter::Debug)
+            .init()
+            .unwrap();
+        });
+}
 
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
+    use futures::StreamExt;
     use shvclient::clientapi::RpcCallLsList;
     use shvclient::clientnode::{META_METHOD_GET, META_METHOD_SET};
     use url::Url;
@@ -104,16 +114,18 @@ mod tests {
         ShvGateConfig {
             tree: ShvTreeDefinition {
                 node_descriptions: BTreeMap::from([
-                            ("devices/detectors/TC1/status".into(), tree::NodeDescription { methods: vec![META_METHOD_GET, META_METHOD_SET] }),
-                            ("devices/detectors/TC2/status".into(), tree::NodeDescription { methods: vec![] }),
+                            ("devices/detectors/TC1/status".into(), tree::NodeDescription { methods: vec![META_METHOD_GET, META_METHOD_SET], sample_type: tree::SampleType::Continuos }),
+                            ("devices/detectors/TC2/status".into(), tree::NodeDescription { methods: vec![], sample_type: tree::SampleType::Discrete }),
             ])
             },
-            journal: JournalConfig { root_path: "journal".into() }
+            journal: JournalConfig { root_path: "journal".into(), max_file_entries: 10000 }
         }
     }
 
     #[tokio::test]
     async fn it_works() {
+        init_logger();
+
         struct AppState(i32);
         let state = AppState(32);
         let client_config = shvclient::shvrpc::client::ClientConfig {
@@ -124,14 +136,22 @@ mod tests {
             println!("method call on {path}:{method}, param: {value:?}, state: {}", state.0);
             Ok(true)
         };
-        ShvGate::new(gate_config())
-            .method_call_handler_fn(app_rpc_handler)
+        ShvGate::new(gate_config()).await
+            .with_method_call_handler(app_rpc_handler)
             .run(&client_config, |ccs, mut cer, gate_data| {
                 shvclient::runtime::spawn_task(async move {
                     loop {
-                        let event = cer.wait_for_event().await.unwrap();
-                        if matches!(event, shvclient::ClientEvent::Connected(_)) {
-                            break;
+                        match cer.next().await {
+                            Some(event) => {
+                                if matches!(event, shvclient::ClientEvent::Connected(_)) {
+                                    break;
+                                } else {
+                                    panic!("Connection error");
+                                }
+                            }
+                            None => {
+                                panic!("Client gone");
+                            }
                         }
                     }
                     let ls_res = RpcCallLsList::new(".broker")
@@ -144,6 +164,7 @@ mod tests {
             )
             .await
             .unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     }
 }

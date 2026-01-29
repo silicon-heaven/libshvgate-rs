@@ -7,19 +7,22 @@ edition = "2024"
 futures = "0.3.31"
 log = "0.4.29"
 shvclient = { version = "0.22.0", default-features = false }
+shvrpc = { version = "8.0", features = ["journal"] }
 smol = { version = "2.0.2", optional = true }
-tokio = { version = "1.49.0", optional = true }
+tokio = { version = "1.49.0", features = ["fs"], optional = true }
+tokio-util = { version = "0.7.18", features = ["io"], optional = true }
 url = "2.5.8"
 
 [features]
 default = []
 
-tokio = ["dep:tokio", "shvclient/tokio"]
+tokio = ["dep:tokio", "dep:tokio-util", "shvclient/tokio"]
 smol = ["dep:smol", "shvclient/smol"]
 
 [dev-dependencies]
 tokio = { version = "1.49.0" }
 shvclient = { version = "0.22.0", features = ["tokio"] }
+simple_logger = { version = "5.1.0", features = ["stderr"] }
 
 # [patch.crates-io]
 # shvclient = { path = "../libshvclient-rs" }

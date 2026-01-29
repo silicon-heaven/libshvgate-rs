@@ -9,8 +9,6 @@ use shvclient::shvproto::RpcValue;
 use shvclient::shvrpc::util::children_on_path;
 use shvclient::shvrpc::{RpcMessage, RpcMessageMetaTags as _};
 
-use crate::ShvGateData;
-
 #[derive(Debug)]
 pub(crate) struct ShvTree {
     pub(crate) values: BTreeMap<String, RwLock<RpcValue>>,
@@ -34,9 +32,17 @@ impl ShvTreeDefinition {
     }
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SampleType {
+    #[default]
+    Continuos,
+    Discrete,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct NodeDescription {
     pub(crate) methods: Vec<MetaMethod>,
+    pub(crate) sample_type: SampleType,
 }
 
 impl ShvTree {
@@ -57,15 +63,18 @@ impl ShvTree {
 
     pub(crate) fn update(&self, path: &str, new_value: &RpcValue) -> Option<bool> {
         let Some(locked_value) = self.values.get(path) else {
-            // panic!("Value node on path `{path}` does not exist");
             return None;
         };
         let mut value = locked_value.write().unwrap();
-        if &*value == new_value {
-            return Some(false);
+        if &*value != new_value ||
+            self.definition.node_descriptions
+                .get(path)
+                .is_some_and(|descr| descr.sample_type == SampleType::Discrete)
+        {
+            *value = new_value.clone();
+            return Some(true);
         }
-        *value = new_value.clone();
-        Some(true)
+        Some(false)
     }
 
     pub(crate) fn read(&self, path: &str) -> Option<RpcValue> {
@@ -78,10 +87,11 @@ impl ShvTree {
     }
 }
 
+// Move to data or rpc module
 pub(crate) async fn rpc_handler(
     rq: RpcMessage,
     client_cmd_tx: ClientCommandSender,
-    gate_data: Arc<ShvGateData>,
+    gate_data: Arc<crate::GateData>,
     app_rpc_handler: Option<RpcHandler>,
 ) -> RequestHandlerResult
 {
@@ -110,7 +120,7 @@ pub(crate) async fn rpc_handler(
                         ];
                         // gate_data.tree.definition.node_descriptions
                         const ROOT_PATH: &str = "";
-                        nodes.append(&mut children_on_path(&gate_data.tree.definition.node_descriptions, ROOT_PATH).unwrap_or_default());
+                        nodes.append(&mut children_on_path(&gate_data.tree().definition.node_descriptions, ROOT_PATH).unwrap_or_default());
                         Ok(nodes)
                     };
                     ls.resolve(METHODS, ls_handler)
@@ -139,10 +149,10 @@ pub(crate) async fn rpc_handler(
             }
         }
         NodeType::Device => {
-            let Some(children) = children_on_path(&gate_data.tree.definition.node_descriptions, &path) else {
+            let Some(children) = children_on_path(&gate_data.tree().definition.node_descriptions, &path) else {
                 return err_unresolved_request()
             };
-            let methods = match gate_data.tree.definition.node_descriptions.get(&path) {
+            let methods = match gate_data.tree().definition.node_descriptions.get(&path) {
                 Some(descr) => descr.methods.clone(),
                 None => Default::default(),
             };
@@ -155,10 +165,10 @@ pub(crate) async fn rpc_handler(
                         // Handle "set" and "get"
                         // TODO
                         match method_name {
-                            METH_GET => m.resolve(methods, async move || { Ok(gate_data.tree.read(&path).unwrap_or_else(RpcValue::null)) }),
+                            METH_GET => m.resolve(methods, async move || { Ok(gate_data.tree().read(&path).unwrap_or_else(RpcValue::null)) }),
                             METH_SET => m.resolve(methods, async move || {
                                 // Update the value in the tree
-                                let res = gate_data.update_value(&path, param.unwrap_or_else(RpcValue::null)).await;
+                                let res = gate_data.update_value(&path, param.unwrap_or_else(RpcValue::null), &client_cmd_tx).await;
                                 Ok(res.unwrap_or_default())
                             }),
                             _ => {
@@ -206,4 +216,4 @@ impl NodeType {
 
 pub type RpcResult = Result<RpcValue, RpcError>;
 pub type RpcResultFuture = BoxFuture<'static, RpcResult>;
-pub type RpcHandler = Arc<dyn Fn(String, String, Option<RpcValue>, ClientCommandSender, Arc<ShvGateData>) -> RpcResultFuture + Send + Sync>;
+pub type RpcHandler = Arc<dyn Fn(String, String, Option<RpcValue>, ClientCommandSender, Arc<crate::GateData>) -> RpcResultFuture + Send + Sync>;
