@@ -9,12 +9,13 @@ use shvrpc::datachange::{DataChange, ValueFlags};
 use shvrpc::journalentry::JournalEntry;
 use shvrpc::journalrw::JournalWriterLog2;
 use shvrpc::metamethod::AccessLevel;
+use shvrpc::{RpcMessage, RpcMessageMetaTags as _};
 use tokio::fs::File;
 use tokio::sync::RwLock;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
 use crate::send_rpc_signal;
-use crate::tree::ShvTree;
+use crate::tree::{ShvTree, ShvTreeDefinition};
 
 pub(crate) struct JournalConfig {
     pub(crate) root_path: PathBuf,
@@ -31,9 +32,58 @@ struct JournalData {
 }
 
 pub struct GateData {
+    pub(crate) start_time: std::time::Instant,
+    pub(crate) journal_config: JournalConfig,
     tree: ShvTree,
-    journal_config: JournalConfig,
     journal_data: RwLock<JournalData>,
+}
+
+fn journalentry_to_rpcvalue(entry: JournalEntry) -> RpcValue {
+    let mut value_flags = ValueFlags::empty();
+    if !entry.repeat {
+        value_flags.insert(ValueFlags::SPONTANEOUS);
+    }
+    if entry.provisional {
+        value_flags.insert(ValueFlags::PROVISIONAL);
+    }
+
+    let data = shvclient::shvproto::make_map!(
+        "timestamp" => DateTime::from_epoch_msec(entry.epoch_msec),
+        "epochMsec" => entry.epoch_msec,
+        "path" => entry.path,
+        "value" => entry.value,
+        "domain" => entry.signal,
+        "valueFlags" => value_flags.bits(),
+        "userId" => entry.user_id,
+    );
+    let mut meta = shvclient::shvproto::MetaMap::new();
+    meta.insert(shvrpc::rpctype::Tag::MetaTypeId as i32, (shvrpc::rpctype::global_ns::MetaTypeID::ShvJournalEntry as i32).into());
+    RpcValue::new(data.into(), Some(meta))
+}
+
+const CMDLOG: &str = "cmdlog";
+
+pub(crate) fn rpc_command_to_journal_entry(rq: &RpcMessage) -> JournalEntry {
+    let user_id = rq
+        .tag(shvrpc::rpcmessage::Tag::UserId as i32)
+        .map(RpcValue::to_cpon);
+    let now = DateTime::now();
+    let value = format!("{method}({param})",
+        method = rq.method().to_owned().unwrap_or_default(),
+        param = rq.param().cloned().unwrap_or_else(RpcValue::null).to_cpon()
+    );
+    JournalEntry {
+        path: rq.shv_path().unwrap_or_default().into(),
+        signal: CMDLOG.into(),
+        source: Default::default(),
+        value: value.into(),
+        user_id,
+        access_level: AccessLevel::Command as _,
+        repeat: false,
+        provisional: false,
+        epoch_msec: now.epoch_msec(),
+        short_time: -1,
+    }
 }
 
 impl GateData {
@@ -41,10 +91,20 @@ impl GateData {
         let log_writer = create_log_writer(&journal_config.root_path, &DateTime::now()).await?;
         let snapshot_keys = tree.values.keys().cloned().collect();
         Ok(Self {
+            start_time: std::time::Instant::now(),
             tree,
             journal_config,
             journal_data: RwLock::new(JournalData { log_writer, snapshot_keys, entries_count: 0 }),
         })
+    }
+
+
+    pub async fn log_command(&self, cmd_rq: &RpcMessage, client_cmd_tx: &ClientCommandSender) -> shvrpc::Result<()> {
+        let journal_entry = rpc_command_to_journal_entry(cmd_rq);
+        self.journal_append(&journal_entry)
+            .await
+            .map_err(|err| format!("Cannot write a command request to the journal, request: `{rq}`, error: {err}", rq = cmd_rq.to_cpon()))?;
+        send_rpc_signal(client_cmd_tx, journal_entry.path.clone(), CMDLOG, journalentry_to_rpcvalue(journal_entry))
     }
 
     pub async fn update_value(&self, path: &str, new_value: RpcValue, client_cmd_tx: &ClientCommandSender) -> shvrpc::Result<bool> {
@@ -120,8 +180,12 @@ impl GateData {
     }
 
 
-    pub(crate) fn tree(&self) -> &ShvTree {
-        &self.tree
+    pub fn read_value(&self, path: impl AsRef<str>) -> Option<RpcValue> {
+        self.tree.read(path)
+    }
+
+    pub fn tree_definition(&self) -> &ShvTreeDefinition {
+        &self.tree.definition
     }
 }
 
@@ -191,10 +255,6 @@ fn datetime_to_log2_filename(dt: &DateTime) -> String {
         .to_chrono_datetime()
         .format("%Y-%m-%dT%H-%M-%S-%3f.log2")
         .to_string()
-}
-
-fn msec_to_log2_filename(msec: i64) -> String {
-    datetime_to_log2_filename(&DateTime::from_epoch_msec(msec))
 }
 
 async fn create_log_writer(base_path: impl AsRef<Path>, date_time: &DateTime) -> Result<FileJournalWriterLog2, std::io::Error> {

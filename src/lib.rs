@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::sync::Arc;
 
 use shvclient::clientnode::RpcError;
@@ -7,6 +6,7 @@ use shvclient::shvrpc::client::ClientConfig;
 use shvclient::{ClientCommandSender, ClientEventsReceiver};
 
 use self::data::{JournalConfig, GateData};
+use self::rpc::{RpcHandler, rpc_handler};
 use self::tree::{ShvTree, ShvTreeDefinition};
 
 use shvclient::shvrpc::RpcMessage;
@@ -14,7 +14,7 @@ pub(crate) use shvclient::shvrpc::Result as ShvRpcResult;
 
 mod data;
 mod tree;
-
+mod rpc;
 
 pub(crate) fn send_rpc_signal(
     client_cmd_tx: &ClientCommandSender,
@@ -31,7 +31,7 @@ pub(crate) fn send_rpc_signal(
 
 pub struct ShvGate {
     data: Arc<GateData>,
-    app_rpc_handler: Option<tree::RpcHandler>,
+    app_rpc_handler: Option<RpcHandler>,
 }
 
 
@@ -71,7 +71,7 @@ impl ShvGate {
             let gate_data = self.data.clone();
             let app_rpc_handler = self.app_rpc_handler.clone();
             move |rq, cmd_sender|
-                tree::rpc_handler(rq, cmd_sender, gate_data.clone(), app_rpc_handler.clone())
+                rpc_handler(rq, cmd_sender, gate_data.clone(), app_rpc_handler.clone())
         };
         shvclient::Client::new()
             .mount_dynamic("", rpc_handler)
@@ -105,20 +105,43 @@ mod tests {
 
     use futures::StreamExt;
     use shvclient::clientapi::RpcCallLsList;
-    use shvclient::clientnode::{META_METHOD_GET, META_METHOD_SET};
+    use shvclient::clientnode::{META_METHOD_GET, META_METHOD_SET, METH_SET};
+    use shvrpc::metamethod::{AccessLevel, Flags, MetaMethod};
+    use shvrpc::rpcmessage::RpcErrorCode;
     use url::Url;
+
+    use crate::rpc::log_err;
 
     use super::*;
 
     fn gate_config() -> ShvGateConfig {
+        const META_METHOD_SIM_SET: MetaMethod = MetaMethod::new_static(
+            "simSet",
+            Flags::UserIDRequired,
+            AccessLevel::Command,
+            "",
+            "",
+            &[],
+            "",
+        );
         ShvGateConfig {
             tree: ShvTreeDefinition {
-                node_descriptions: BTreeMap::from([
-                            ("devices/detectors/TC1/status".into(), tree::NodeDescription { methods: vec![META_METHOD_GET, META_METHOD_SET], sample_type: tree::SampleType::Continuos }),
-                            ("devices/detectors/TC2/status".into(), tree::NodeDescription { methods: vec![], sample_type: tree::SampleType::Discrete }),
+                nodes_description: BTreeMap::from([
+                            ("devices/detectors/TC1/status".into(), tree::NodeDescription {
+                                methods: vec![META_METHOD_GET, META_METHOD_SET],
+                                sample_type: tree::SampleType::Continuos
+                            }),
+                            ("devices/detectors/TC2/status".into(), tree::NodeDescription {
+                                methods: vec![META_METHOD_GET, META_METHOD_SET, META_METHOD_SIM_SET],
+                                sample_type: tree::SampleType::Discrete
+                            }),
             ])
             },
-            journal: JournalConfig { root_path: "journal".into(), max_file_entries: 10000 }
+            journal: JournalConfig {
+                root_path: "journal".into(),
+                max_file_entries: 10_000,
+                max_journal_size: 10_000_000,
+            }
         }
     }
 
@@ -132,13 +155,21 @@ mod tests {
             url: Url::parse(&std::env::var("BROKER_URL").expect("BROKER_URL env variable should be defined")).unwrap(),
             ..Default::default()
         };
-        let app_rpc_handler = move |path, method, value, ccs, tree| async move {
-            println!("method call on {path}:{method}, param: {value:?}, state: {}", state.0);
-            Ok(true)
-        };
         ShvGate::new(gate_config()).await
-            .with_method_call_handler(app_rpc_handler)
-            .run(&client_config, |ccs, mut cer, gate_data| {
+            .with_method_call_handler(move |path, method, value, client_cmd_tx, gate_data| async move {
+                println!("method call on {path}:{method}, param: {value:?}, state: {}", state.0);
+                if method == METH_SET || method == "simSet" {
+                    return gate_data
+                        .update_value(&path, value.unwrap_or_else(RpcValue::null), &client_cmd_tx)
+                        .await
+                        .map_err(|err| {
+                            log_err(err);
+                            RpcError::new(RpcErrorCode::InternalError, "Cannot update node value")
+                        })
+                }
+                Ok(true)
+            })
+            .run(&client_config, |ccs, mut cer, _gate_data| {
                 shvclient::runtime::spawn_task(async move {
                     loop {
                         match cer.next().await {
