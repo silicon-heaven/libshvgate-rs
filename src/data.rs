@@ -19,6 +19,7 @@ use crate::tree::ShvTree;
 pub(crate) struct JournalConfig {
     pub(crate) root_path: PathBuf,
     pub(crate) max_file_entries: u64,
+    pub(crate) max_journal_size: u64,
 }
 
 type FileJournalWriterLog2 = JournalWriterLog2<BufWriter<Compat<File>>>;
@@ -67,7 +68,7 @@ impl GateData {
         }
     }
 
-    async fn journal_append(&self, entry: &JournalEntry) -> Result<(), std::io::Error> {
+    async fn journal_append(&self, entry: &JournalEntry) -> std::io::Result<()> {
         let journal_data = &mut *self.journal_data.write().await;
         let append_entry = async |journal_data: &mut JournalData| {
             journal_data.log_writer.append(entry).await?;
@@ -111,13 +112,62 @@ impl GateData {
         journal_data.log_writer = create_log_writer(&self.journal_config.root_path, &DateTime::now()).await?;
         journal_data.snapshot_keys = self.tree.values.keys().cloned().collect();
         journal_data.entries_count = 0;
+
         // Append the journal entry to the new file
-        append_entry(journal_data).await
+        append_entry(journal_data).await?;
+
+        trim_journal(&self.journal_config, journal_data).await
     }
 
-    pub fn tree(&self) -> &ShvTree {
+
+    pub(crate) fn tree(&self) -> &ShvTree {
         &self.tree
     }
+}
+
+async fn trim_journal(journal_config: &JournalConfig, _: &mut JournalData) -> std::io::Result<()> {
+    trim_dir(
+        &journal_config.root_path,
+        journal_config.max_journal_size,
+        |path , metadata| metadata.is_file()
+        && path.extension().is_some_and(|ext| ext == "log2")
+    ).await
+}
+
+async fn trim_dir(
+    dir_path: impl AsRef<Path>,
+    size_limit: u64,
+    file_filter: impl Fn(&Path, &std::fs::Metadata) -> bool
+) -> std::io::Result<()>
+{
+    use tokio::fs;
+    let mut entries = fs::read_dir(&dir_path).await?;
+    let mut overall_size = 0;
+    let mut files = Vec::new();
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        let metadata = entry.metadata().await?;
+        if file_filter(&path, &metadata) {
+            let size = metadata.len();
+            files.push((path, size));
+            overall_size += size;
+        }
+    }
+    files.sort_by(|(path_a,_), (path_b,_)| path_a.cmp(path_b));
+    // Keep at least 2 most recent files for log snapshots
+    let removable_files = &files[..files.len().saturating_sub(2)];
+    for (file_path, file_size) in removable_files {
+        if overall_size <= size_limit {
+            break
+        }
+        if let Err(err) = fs::remove_file(file_path).await {
+            log::error!("Cannot delete {file_path}: {err}", file_path = file_path.to_string_lossy());
+            continue;
+        }
+        overall_size -= file_size;
+        log::info!("Deleted: {path} ({file_size} bytes)", path = file_path.to_string_lossy());
+    }
+    Ok(())
 }
 
 // TODO: variant with custom signal, source
