@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use futures::io::BufWriter;
 use shvclient::ClientCommandSender;
-use shvclient::clientnode::{METH_GET, SIG_CHNG};
+use shvclient::clientnode::SIG_CHNG;
 use shvclient::shvproto::{DateTime, RpcValue};
 use shvrpc::datachange::{DataChange, ValueFlags};
 use shvrpc::journalentry::JournalEntry;
@@ -15,7 +15,7 @@ use tokio::sync::RwLock;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
 use crate::send_rpc_signal;
-use crate::tree::{ShvTree, ShvTreeDefinition};
+use crate::tree::{CachedValue, PathMethod, ShvTree, ShvTreeDefinition};
 
 pub(crate) struct JournalConfig {
     pub(crate) root_path: PathBuf,
@@ -27,7 +27,7 @@ type FileJournalWriterLog2 = JournalWriterLog2<BufWriter<Compat<File>>>;
 
 struct JournalData {
     log_writer: FileJournalWriterLog2,
-    snapshot_keys: BTreeSet<String>,
+    snapshot_keys: BTreeSet<PathMethod>,
     entries_count: u64,
 }
 
@@ -68,14 +68,14 @@ pub(crate) fn rpc_command_to_journal_entry(rq: &RpcMessage) -> JournalEntry {
         .tag(shvrpc::rpcmessage::Tag::UserId as i32)
         .map(RpcValue::to_cpon);
     let now = DateTime::now();
+    let method = rq.method().to_owned().unwrap_or_default();
     let value = format!("{method}({param})",
-        method = rq.method().to_owned().unwrap_or_default(),
         param = rq.param().cloned().unwrap_or_else(RpcValue::null).to_cpon()
     );
     JournalEntry {
         path: rq.shv_path().unwrap_or_default().into(),
         signal: CMDLOG.into(),
-        source: Default::default(),
+        source: method.into(),
         value: value.into(),
         user_id,
         access_level: AccessLevel::Command as _,
@@ -89,7 +89,7 @@ pub(crate) fn rpc_command_to_journal_entry(rq: &RpcMessage) -> JournalEntry {
 impl GateData {
     pub(crate) async fn new(journal_config: JournalConfig, tree: ShvTree) -> shvrpc::Result<Self> {
         let log_writer = create_log_writer(&journal_config.root_path, &DateTime::now()).await?;
-        let snapshot_keys = tree.values.keys().cloned().collect();
+        let snapshot_keys = tree.snapshot_keys().cloned().collect();
         Ok(Self {
             start_time: std::time::Instant::now(),
             tree,
@@ -104,24 +104,34 @@ impl GateData {
         self.journal_append(&journal_entry)
             .await
             .map_err(|err| format!("Cannot write a command request to the journal, request: `{rq}`, error: {err}", rq = cmd_rq.to_cpon()))?;
-        send_rpc_signal(client_cmd_tx, journal_entry.path.clone(), CMDLOG, journalentry_to_rpcvalue(journal_entry))
+        send_rpc_signal(client_cmd_tx, journal_entry.path.clone(), journal_entry.source.clone(), CMDLOG, journalentry_to_rpcvalue(journal_entry))
     }
 
-    pub async fn update_value(&self, path: &str, new_value: RpcValue, client_cmd_tx: &ClientCommandSender) -> shvrpc::Result<bool> {
-        match self.tree.update(path, &new_value) {
-            None => Err(format!("Value node on path `{path}` does not exist").into()),
+    pub async fn update_value(
+        &self,
+        path: impl AsRef<str>,
+        method: impl AsRef<str>,
+        new_value: RpcValue,
+        force_chng: bool,
+        client_cmd_tx: &ClientCommandSender
+    ) -> shvrpc::Result<bool>
+    {
+        let path = path.as_ref();
+        let method = method.as_ref();
+        match self.tree.update(&path, &method, &new_value) {
+            None => Err(format!("Cannot update value. Cache for method `{path}:{method}` does not exist").into()),
             Some(updated) => {
-                if updated {
+                if (updated || force_chng) && self.tree.method_has_signal(path, method, SIG_CHNG) {
                     let now = DateTime::now();
                     let data_change = DataChange {
                         date_time: Some(now),
                         ..DataChange::from(new_value.clone())
                     };
-                    let entry = datachange_to_journal_entry(path, data_change.clone(), &now);
+                    let entry = datachange_to_journal_entry(path, method, data_change.clone(), &now);
                     self.journal_append(&entry)
                         .await
                         .map_err(|err| format!("Journal write error: {err}"))?;
-                    send_rpc_signal(client_cmd_tx, path, SIG_CHNG, data_change.into())?;
+                    send_rpc_signal(client_cmd_tx, path, method, SIG_CHNG, data_change.into())?;
                 }
                 Ok(updated)
             }
@@ -132,7 +142,7 @@ impl GateData {
         let journal_data = &mut *self.journal_data.write().await;
         let append_entry = async |journal_data: &mut JournalData| {
             journal_data.log_writer.append(entry).await?;
-            journal_data.snapshot_keys.remove(&entry.path);
+            journal_data.snapshot_keys.remove(&PathMethod(entry.path.clone(), entry.source.clone()));
             journal_data.entries_count +=1;
             Ok(())
         };
@@ -142,15 +152,21 @@ impl GateData {
         let snapshot_msec = entry.epoch_msec;
         // Get owned version of snapshot_keys to consume its values while iterating
         let mut remaining_snapshot_keys = std::mem::take(&mut journal_data.snapshot_keys).into_iter();
-        while let Some(snapshot_entry_path) = remaining_snapshot_keys.next() {
-            if let Some(node) = self.tree.values.get(&snapshot_entry_path) {
-                let node = node.read().unwrap_or_else(|_| panic!("Poisoned RwLock of tree node {snapshot_entry_path}")).clone();
+        while let Some(snapshot_entry_path_method) = remaining_snapshot_keys.next() {
+            if let Some(cached_value) = self.tree.cache.get(&snapshot_entry_path_method) {
+                let PathMethod(path, method) = &snapshot_entry_path_method;
+                let CachedValue(Some(value)) = cached_value
+                    .read()
+                    .unwrap_or_else(|_| panic!("Poisoned RwLock of tree node {path}:{method}"))
+                    .clone() else {
+                        continue
+                };
                 let entry = JournalEntry {
                     epoch_msec: snapshot_msec,
-                    path: snapshot_entry_path,
+                    path: path.into(),
                     signal: SIG_CHNG.into(),
-                    source: METH_GET.into(),
-                    value: node,
+                    source: method.into(),
+                    value,
                     access_level: AccessLevel::Read as _,
                     short_time: -1,
                     user_id: None,
@@ -160,7 +176,7 @@ impl GateData {
                 if let Err(err) = journal_data.log_writer.append(&entry).await {
                     // Leave snapshot_keys in consistent state on failure (although the last entry
                     // write state is undefined).
-                    journal_data.snapshot_keys.insert(entry.path);
+                    journal_data.snapshot_keys.insert(snapshot_entry_path_method);
                     journal_data.snapshot_keys.extend(remaining_snapshot_keys);
                     return Err(err);
                 }
@@ -170,7 +186,7 @@ impl GateData {
         // journal_data.snapshot_keys is empty. If create_log_writer fails here and then journal_append
         // is called again, it will just proceed here again without any other effects.
         journal_data.log_writer = create_log_writer(&self.journal_config.root_path, &DateTime::now()).await?;
-        journal_data.snapshot_keys = self.tree.values.keys().cloned().collect();
+        journal_data.snapshot_keys = self.tree.snapshot_keys().cloned().collect();
         journal_data.entries_count = 0;
 
         // Append the journal entry to the new file
@@ -180,8 +196,8 @@ impl GateData {
     }
 
 
-    pub fn read_value(&self, path: impl AsRef<str>) -> Option<RpcValue> {
-        self.tree.read(path)
+    pub fn cached_value(&self, path: impl Into<String>, method: impl Into<String>) -> Option<RpcValue> {
+        self.tree.read(path, method)
     }
 
     pub fn tree_definition(&self) -> &ShvTreeDefinition {
@@ -234,13 +250,12 @@ async fn trim_dir(
     Ok(())
 }
 
-// TODO: variant with custom signal, source
-fn datachange_to_journal_entry(path: impl Into<String>, data_change: DataChange, default_date_time: &DateTime) -> JournalEntry {
+fn datachange_to_journal_entry(path: impl Into<String>, method: impl Into<String>, data_change: DataChange, default_date_time: &DateTime) -> JournalEntry {
     JournalEntry {
         epoch_msec: data_change.date_time.as_ref().map_or_else(|| default_date_time.epoch_msec(), |dt| dt.epoch_msec()),
         path: path.into(),
         signal: SIG_CHNG.into(),
-        source: METH_GET.into(),
+        source: method.into(),
         value: data_change.value,
         access_level: AccessLevel::Read as _,
         short_time: data_change.short_time.unwrap_or(-1),

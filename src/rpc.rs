@@ -3,7 +3,7 @@ use std::sync::Arc;
 use futures::future::BoxFuture;
 use shvclient::ClientCommandSender;
 use shvclient::appnodes::DOT_APP_METHODS;
-use shvclient::clientnode::{METH_GET, METH_SET, Method, RequestHandlerResult, StaticNode, err_unresolved_request};
+use shvclient::clientnode::{Method, RequestHandlerResult, StaticNode, err_unresolved_request};
 use shvclient::shvproto::RpcValue;
 use shvrpc::metamethod::{AccessLevel, MetaMethod, Flags as MetaMethodFlags};
 use shvrpc::rpcmessage::{RpcError, RpcErrorCode};
@@ -91,37 +91,23 @@ pub(crate) async fn rpc_handler(
                                 .unwrap_or_else(log_err);
                         }
                     };
-                    let method_name = m.method();
-                    match method_name {
-                        METH_GET => m.resolve(methods, async move || {
+                    let method = m.method().to_owned();
+                    if mm.flags.contains(MetaMethodFlags::IsGetter) {
+                        m.resolve(methods, async move || {
                             log_user_command(&gate_data, &rq, &client_cmd_tx).await;
-                            Ok(gate_data.read_value(&path).unwrap_or_else(RpcValue::null))
-                        }),
-                        _ => {
-                            let method_name = method_name.to_owned();
-                            m.resolve(methods, async move || {
-                                log_user_command(&gate_data, &rq, &client_cmd_tx).await;
-                                let Some(app_handler) = app_rpc_handler else {
-                                    // Default implementation will just update the value in the
-                                    // tree and return a bool value indicating a change.
-                                    if method_name == METH_SET {
-                                        return gate_data
-                                            .update_value(&path, param.unwrap_or_else(RpcValue::null), &client_cmd_tx)
-                                            .await
-                                            .map(RpcValue::from)
-                                            .map_err(|err| {
-                                                log_err(err);
-                                                RpcError::new(RpcErrorCode::InternalError, "Cannot update node value")
-                                            })
-                                    }
-                                    return Err(RpcError::new(
-                                            RpcErrorCode::NotImplemented,
-                                            format!("'{path}:{method_name}()' is defined but not implemented")
-                                    ))
-                                };
-                                app_handler(path, method_name, param, client_cmd_tx, gate_data).await
-                            })
-                        }
+                            Ok(gate_data.cached_value(path, method)) //.unwrap_or_else(RpcValue::null))
+                        })
+                    } else {
+                        m.resolve(methods, async move || {
+                            log_user_command(&gate_data, &rq, &client_cmd_tx).await;
+                            let Some(app_handler) = app_rpc_handler else {
+                                return Err(RpcError::new(
+                                        RpcErrorCode::NotImplemented,
+                                        format!("'{path}:{method}()' is defined but not implemented")
+                                ))
+                            };
+                            app_handler(path, method, param, client_cmd_tx, gate_data).await
+                        })
                     }
                 }
             }

@@ -19,14 +19,15 @@ mod rpc;
 pub(crate) fn send_rpc_signal(
     client_cmd_tx: &ClientCommandSender,
     path: impl AsRef<str>,
+    method: impl AsRef<str>,
     signal: impl AsRef<str>,
     value: RpcValue
 ) -> ShvRpcResult<()>
 {
-    let (path, signal) = (path.as_ref(), signal.as_ref());
+    let (path, method, signal) = (path.as_ref(), method.as_ref(), signal.as_ref());
     client_cmd_tx
-        .send_message(RpcMessage::new_signal(path, signal, Some(value)))
-        .map_err(|err| format!("Cannot send `{path}:{signal}` notification: {err}").into())
+        .send_message(RpcMessage::new_signal_with_source(path, signal, method, Some(value)))
+        .map_err(|err| format!("Cannot send `{path}:{method}:{signal}` notification: {err}").into())
 }
 
 pub struct ShvGate {
@@ -160,14 +161,15 @@ mod tests {
                 println!("method call on {path}:{method}, param: {value:?}, state: {}", state.0);
                 if method == METH_SET || method == "simSet" {
                     return gate_data
-                        .update_value(&path, value.unwrap_or_else(RpcValue::null), &client_cmd_tx)
+                        .update_value(&path, METH_GET, value.unwrap_or_else(RpcValue::null), false, &client_cmd_tx)
                         .await
+                        .map(RpcValue::from)
                         .map_err(|err| {
                             log_err(err);
                             RpcError::new(RpcErrorCode::InternalError, "Cannot update node value")
                         })
                 }
-                Ok(true)
+                Ok("not implemented".into())
             })
             .run(&client_config, |ccs, mut cer, _gate_data| {
                 shvclient::runtime::spawn_task(async move {

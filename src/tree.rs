@@ -1,12 +1,38 @@
 use std::collections::BTreeMap;
 use std::sync::RwLock;
 
-use shvclient::clientnode::{METH_GET, MetaMethod};
+use shvclient::clientnode::{MetaMethod, SIG_CHNG};
 use shvclient::shvproto::RpcValue;
+use shvrpc::metamethod::SignalsDefinition;
+
+mod yaml;
+
+#[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq)]
+pub(crate) struct PathMethod(pub(crate) String, pub(crate) String);
+
+#[derive(Debug, Clone)]
+pub(crate) struct CachedValue(pub(crate) Option<RpcValue>);
+
+impl CachedValue {
+    fn update(&mut self, new_value: &RpcValue) -> bool {
+        match &mut self.0 {
+            Some(value) => if new_value != value {
+                *value = new_value.clone();
+                true
+            } else {
+                false
+            },
+            None => {
+                self.0 = Some(new_value.clone());
+                true
+            }
+        }
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct ShvTree {
-    pub(crate) values: BTreeMap<String, RwLock<RpcValue>>,
+    pub(crate) cache: BTreeMap<PathMethod, RwLock<CachedValue>>,
     pub(crate) definition: ShvTreeDefinition,
 }
 
@@ -53,42 +79,60 @@ pub struct NodeDescription {
 
 impl ShvTree {
     pub(crate) fn from_definition(definition: ShvTreeDefinition) -> Self {
-        let values = definition
+        let cache = definition
             .nodes_description
             .iter()
-            .filter_map(|(path, descr)| descr
+            .flat_map(|(path, descr)| descr
                 .methods
                 .iter()
-                .find(|mm| mm.name == METH_GET)
-                .map(|_| (path.clone(), RwLock::new(0.into())))
+                .filter_map(|mm| mm.flags.contains(shvrpc::metamethod::Flags::IsGetter).then(|| PathMethod(path.clone(), String::from(mm.name.clone()))))
             )
+            .map(|path_method| (path_method, RwLock::new(CachedValue(None))))
             .collect();
 
-        Self { values, definition }
+        Self { cache, definition }
     }
 
-    pub(crate) fn update(&self, path: &str, new_value: &RpcValue) -> Option<bool> {
-        let Some(locked_value) = self.values.get(path) else {
+    pub(crate) fn update(&self, path: impl AsRef<str>, method: impl AsRef<str>, new_value: &RpcValue) -> Option<bool> {
+        let path = path.as_ref();
+        let method = method.as_ref();
+        let Some(locked_value) = self.cache.get(&PathMethod(String::from(path), String::from(method))) else {
             return None;
         };
         let mut value = locked_value.write().unwrap();
-        if &*value != new_value ||
-            self.definition.nodes_description
-                .get(path)
-                .is_some_and(|descr| descr.sample_type == SampleType::Discrete)
-        {
-            *value = new_value.clone();
-            return Some(true);
-        }
-        Some(false)
+        Some(value.update(new_value))
     }
 
-    pub(crate) fn read(&self, path: impl AsRef<str>) -> Option<RpcValue> {
-        self.values
-            .get(path.as_ref())
+    pub(crate) fn read(&self, path: impl Into<String>, method: impl Into<String>) -> Option<RpcValue> {
+        self.cache
+            .get(&PathMethod(path.into(), method.into()))
             .map(RwLock::read)
             .map(Result::unwrap)
             .as_deref()
-            .map(Clone::clone)
+            .and_then(|cached_value| cached_value.0.clone())
+    }
+
+    pub(crate) fn method_has_signal(&self, path: impl AsRef<str>, method: impl AsRef<str>, signal: impl AsRef<str>) -> bool {
+        let signal = signal.as_ref();
+        let method = method.as_ref();
+        self.definition.nodes_description
+            .get(path.as_ref())
+            .and_then(|descr| descr
+                .methods
+                .iter()
+                .find(|mm| mm.name == method &&
+                    match &mm.signals {
+                        SignalsDefinition::Static(def) => def.iter().find(|(name, _)| signal == *name).is_some(),
+                        SignalsDefinition::Dynamic(def) => def.contains_key(signal),
+                    })
+            )
+            .is_some()
+    }
+
+    pub(crate) fn snapshot_keys(&self) -> impl Iterator<Item = &PathMethod> {
+        self
+            .cache
+            .keys()
+            .filter(|PathMethod(path, method)| self.method_has_signal(path, method, SIG_CHNG))
     }
 }
