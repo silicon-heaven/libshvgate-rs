@@ -17,10 +17,10 @@ use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 use crate::send_rpc_signal;
 use crate::tree::{CachedValue, PathMethod, ShvTree, ShvTreeDefinition};
 
-pub(crate) struct JournalConfig {
-    pub(crate) root_path: PathBuf,
-    pub(crate) max_file_entries: u64,
-    pub(crate) max_journal_size: u64,
+pub struct JournalConfig {
+    pub root_path: PathBuf,
+    pub max_file_entries: u64,
+    pub max_journal_size: u64,
 }
 
 type FileJournalWriterLog2 = JournalWriterLog2<BufWriter<Compat<File>>>;
