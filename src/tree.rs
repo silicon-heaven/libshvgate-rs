@@ -136,3 +136,144 @@ impl ShvTree {
             .filter(|PathMethod(path, method)| self.method_has_signal(path, method, SIG_CHNG))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use shvrpc::metamethod::{MetaMethod, Flags};
+
+    fn getter_method(name: &str, signals: SignalsDefinition) -> MetaMethod {
+        MetaMethod::new(
+            name.to_owned(),
+            Flags::IsGetter,
+            shvrpc::metamethod::AccessLevel::Read,
+            "",
+            "",
+            signals,
+            ""
+        )
+    }
+
+    fn non_getter_method(name: &str) -> MetaMethod {
+        MetaMethod::new(
+            name.to_owned(),
+            Flags::empty(),
+            shvrpc::metamethod::AccessLevel::Read,
+            "",
+            "",
+            SignalsDefinition::Static(&[]),
+            ""
+        )
+    }
+
+    fn tree_with_methods(path: &str, methods: Vec<MetaMethod>) -> ShvTree {
+        let mut nodes_description = BTreeMap::new();
+        nodes_description.insert(
+            path.into(),
+            NodeDescription { methods },
+        );
+
+        ShvTree::from_definition(ShvTreeDefinition { nodes_description })
+    }
+
+    #[test]
+    fn from_definition_caches_only_getters() {
+        let tree = tree_with_methods(
+            "dev/node",
+            vec![
+                getter_method("getA", SignalsDefinition::Static(&[])),
+                non_getter_method("setA"),
+            ],
+        );
+
+        // Getter exists
+        assert!(tree.read("dev/node", "getA").is_none());
+
+        // Non-getter should not be cached at all
+        assert!(tree.update("dev/node", "setA", &RpcValue::from(1)).is_none());
+        assert!(tree.read("dev/node", "setA").is_none());
+    }
+
+    #[test]
+    fn update_and_read_roundtrip() {
+        let tree = tree_with_methods(
+            "dev/node",
+            vec![getter_method("getA", SignalsDefinition::Static(&[]))],
+        );
+
+        let val = RpcValue::from(42);
+
+        // Initially no cached value
+        assert_eq!(tree.read("dev/node", "getA"), None);
+
+        // Update should hit cache
+        let res = tree.update("dev/node", "getA", &val);
+        assert!(res.is_some());
+
+        // Now value should be readable
+        assert_eq!(tree.read("dev/node", "getA"), Some(val));
+    }
+
+    #[test]
+    fn update_unknown_path_or_method_returns_none() {
+        let tree = tree_with_methods(
+            "dev/node",
+            vec![getter_method("getA", SignalsDefinition::Static(&[]))],
+        );
+
+        assert_eq!(
+            tree.update("dev/other", "getA", &RpcValue::from(1)),
+            None
+        );
+        assert_eq!(
+            tree.update("dev/node", "missing", &RpcValue::from(1)),
+            None
+        );
+    }
+
+    #[test]
+    fn method_has_signal_static_and_dynamic() {
+        let static_signals = SignalsDefinition::Static(&[
+            ("sig1", None),
+            ("sig2", None),
+        ]);
+
+        let mut dyn_map = std::collections::BTreeMap::new();
+        dyn_map.insert("dynSig".into(), Default::default());
+        let dynamic_signals = SignalsDefinition::Dynamic(dyn_map);
+
+        let tree = tree_with_methods(
+            "dev/node",
+            vec![
+                getter_method("m1", static_signals),
+                getter_method("m2", dynamic_signals),
+            ],
+        );
+
+        assert!(tree.method_has_signal("dev/node", "m1", "sig1"));
+        assert!(!tree.method_has_signal("dev/node", "m1", "nope"));
+
+        assert!(tree.method_has_signal("dev/node", "m2", "dynSig"));
+        assert!(!tree.method_has_signal("dev/node", "m2", "sig1"));
+    }
+
+    #[test]
+    fn snapshot_keys_only_methods_with_sig_chng() {
+        let with_chng = getter_method(
+            "m1",
+            SignalsDefinition::Static(&[(SIG_CHNG, None)]),
+        );
+        let without_chng =
+            getter_method("m2", SignalsDefinition::Static(&[]));
+
+        let tree = tree_with_methods("dev/node", vec![with_chng, without_chng]);
+
+        let keys: Vec<_> = tree.snapshot_keys().collect();
+
+        assert_eq!(keys.len(), 1);
+        let PathMethod(path, method) = keys[0];
+        assert_eq!(path, "dev/node");
+        assert_eq!(method, "m1");
+    }
+}
