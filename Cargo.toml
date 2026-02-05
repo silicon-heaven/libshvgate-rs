@@ -7,6 +7,8 @@ edition = "2024"
 futures = "0.3.31"
 humantime = "2.3.0"
 log = "0.4.29"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_yaml_ng = "0.10.0"
 shvclient = { version = "0.23.0", default-features = false }
 shvrpc = { version = "10.0", features = ["journal"] }
 smol = { version = "2.0.2", optional = true }

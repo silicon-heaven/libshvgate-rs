@@ -16,28 +16,39 @@ pub struct ShvTreeDefinition {
 }
 
 impl ShvTreeDefinition {
-    pub fn from_yaml(input: &str) -> Self {
-        // TODO
-        Self { nodes_description: Default::default() }
+    pub fn from_yaml(input: impl AsRef<str>) -> Self {
+        let mut yaml_value: serde_yaml_ng::Value = serde_yaml_ng::from_str(input.as_ref())
+            .unwrap_or_else(|err| panic!("Bad YAML definition: {err}"));
+        yaml_value.apply_merge().unwrap_or_else(|err| panic!("Cannot merge YAML anchors: {err}"));
+        let tree: yaml::Tree = serde_yaml_ng::from_value(yaml_value)
+            .unwrap_or_else(|err| panic!("Bad tree definition: {err}"));
+
+        let mut nodes_description = BTreeMap::new();
+
+        for (path, node_type_name) in tree.nodes {
+            let methods = tree
+                .node_methods
+                .get(&node_type_name)
+                .into_iter()
+                .flatten()
+                .map(|m| MetaMethod::from(m.clone()))
+                .collect();
+
+            nodes_description.insert(path, NodeDescription { methods });
+        }
+
+        Self { nodes_description }
     }
 
-    pub fn from_typeinfo(input: &str) -> Self {
-        // TODO
-        Self { nodes_description: Default::default() }
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum SampleType {
-    #[default]
-    Continuos,
-    Discrete,
+    // pub fn from_typeinfo(input: &str) -> Self {
+    //     // TODO
+    //     Self { nodes_description: Default::default() }
+    // }
 }
 
 #[derive(Debug, Clone)]
 pub struct NodeDescription {
     pub methods: Vec<MetaMethod>,
-    pub sample_type: SampleType,
 }
 
 impl ShvTree {
