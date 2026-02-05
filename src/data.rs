@@ -118,7 +118,7 @@ impl GateData {
     {
         let path = path.as_ref();
         let method = method.as_ref();
-        match self.tree.update(&path, &method, &new_value) {
+        match self.tree.update(path, method, &new_value) {
             None => Err(format!("Cannot update value. Cache for method `{path}:{method}` does not exist").into()),
             Some(updated) => {
                 if (updated || force_chng) && self.tree.method_has_signal(path, method, SIG_CHNG) {

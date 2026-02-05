@@ -24,7 +24,7 @@ pub(crate) async fn rpc_handler(
 
     let path = rq.shv_path().map_or_else(String::new, String::from);
     let method = Method::from_request(&rq);
-    let param = rq.param().map(RpcValue::clone);
+    let param = rq.param().cloned();
 
     match NodeType::from_path(&path) {
         NodeType::Root => {
@@ -84,9 +84,9 @@ pub(crate) async fn rpc_handler(
                     let is_user_id_required = mm.flags.contains(MetaMethodFlags::UserIDRequired);
                     let log_user_command = async move |gate_data: &Arc<crate::data::GateData>, rq: &RpcMessage, client_cmd_tx: &ClientCommandSender| {
                         if is_user_id_required {
-                            // Log commands that require user ID in a request metadata
+                            // Log commands that require user ID in the request metadata
                             gate_data
-                                .log_command(&rq, &client_cmd_tx)
+                                .log_command(rq, client_cmd_tx)
                                 .await
                                 .unwrap_or_else(log_err);
                         }
@@ -95,7 +95,7 @@ pub(crate) async fn rpc_handler(
                     if mm.flags.contains(MetaMethodFlags::IsGetter) {
                         m.resolve(methods, async move || {
                             log_user_command(&gate_data, &rq, &client_cmd_tx).await;
-                            Ok(gate_data.cached_value(path, method)) //.unwrap_or_else(RpcValue::null))
+                            Ok(gate_data.cached_value(path, method))
                         })
                     } else {
                         m.resolve(methods, async move || {

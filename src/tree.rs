@@ -85,7 +85,8 @@ impl ShvTree {
             .flat_map(|(path, descr)| descr
                 .methods
                 .iter()
-                .filter_map(|mm| mm.flags.contains(shvrpc::metamethod::Flags::IsGetter).then(|| PathMethod(path.clone(), String::from(mm.name.clone()))))
+                .filter(|mm| mm.flags.contains(shvrpc::metamethod::Flags::IsGetter))
+                .map(|mm| PathMethod(path.clone(), String::from(mm.name.clone())))
             )
             .map(|path_method| (path_method, RwLock::new(CachedValue(None))))
             .collect();
@@ -96,9 +97,7 @@ impl ShvTree {
     pub(crate) fn update(&self, path: impl AsRef<str>, method: impl AsRef<str>, new_value: &RpcValue) -> Option<bool> {
         let path = path.as_ref();
         let method = method.as_ref();
-        let Some(locked_value) = self.cache.get(&PathMethod(String::from(path), String::from(method))) else {
-            return None;
-        };
+        let locked_value = self.cache.get(&PathMethod(String::from(path), String::from(method)))?;
         let mut value = locked_value.write().unwrap();
         Some(value.update(new_value))
     }
@@ -122,7 +121,7 @@ impl ShvTree {
                 .iter()
                 .find(|mm| mm.name == method &&
                     match &mm.signals {
-                        SignalsDefinition::Static(def) => def.iter().find(|(name, _)| signal == *name).is_some(),
+                        SignalsDefinition::Static(def) => def.iter().any(|(name, _)| signal == *name),
                         SignalsDefinition::Dynamic(def) => def.contains_key(signal),
                     })
             )
