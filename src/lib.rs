@@ -18,6 +18,7 @@ pub use self::data::JournalConfig;
 mod data;
 mod tree;
 mod rpc;
+mod fs;
 
 pub(crate) fn send_rpc_signal(
     client_cmd_tx: &ClientCommandSender,
