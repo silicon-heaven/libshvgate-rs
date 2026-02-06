@@ -128,6 +128,7 @@ impl GateData {
                     let now = DateTime::now();
                     let data_change = DataChange {
                         date_time: Some(now),
+                        value_flags: ValueFlags::SPONTANEOUS,
                         ..DataChange::from(new_value.clone())
                     };
                     let entry = datachange_to_journal_entry(path, method, data_change.clone(), &now);
