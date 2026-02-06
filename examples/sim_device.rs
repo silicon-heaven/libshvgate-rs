@@ -59,7 +59,7 @@ node_methods:
     ShvGateConfig {
         tree,
         journal: JournalConfig {
-            root_path: "journal_example".into(),
+            root_path: "journal3_example".into(),
             max_file_entries: 100,
             max_journal_size: 100_000,
         }
