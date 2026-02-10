@@ -3,12 +3,12 @@ use std::collections::BTreeMap;
 
 
 #[derive(Debug, Deserialize)]
-pub struct Tree {
+pub struct TreeDefinition {
     pub version: String,
-    pub nodes: BTreeMap<String, String>,
+    pub tree: BTreeMap<String, String>,
 
     #[serde(default)]
-    pub node_methods: BTreeMap<String, Vec<Method>>,
+    pub nodes: BTreeMap<String, Vec<Method>>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

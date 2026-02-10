@@ -46,14 +46,14 @@ impl ShvTreeDefinition {
         let mut yaml_value: serde_yaml_ng::Value = serde_yaml_ng::from_str(input.as_ref())
             .unwrap_or_else(|err| panic!("Bad YAML definition: {err}"));
         yaml_value.apply_merge().unwrap_or_else(|err| panic!("Cannot merge YAML anchors: {err}"));
-        let tree: yaml::Tree = serde_yaml_ng::from_value(yaml_value)
+        let tree_def: yaml::TreeDefinition = serde_yaml_ng::from_value(yaml_value)
             .unwrap_or_else(|err| panic!("Bad tree definition: {err}"));
 
         let mut nodes_description = BTreeMap::new();
 
-        for (path, node_type_name) in tree.nodes {
-            let methods = tree
-                .node_methods
+        for (path, node_type_name) in tree_def.tree {
+            let methods = tree_def
+                .nodes
                 .get(&node_type_name)
                 .into_iter()
                 .flatten()
@@ -77,6 +77,14 @@ pub struct NodeDescription {
     pub methods: Vec<MetaMethod>,
 }
 
+pub(crate) fn method_has_signal(mm: &MetaMethod, signal: impl AsRef<str>) -> bool {
+    let signal = signal.as_ref();
+    match &mm.signals {
+        SignalsDefinition::Static(def) => def.iter().any(|(name, _)| signal == *name),
+        SignalsDefinition::Dynamic(def) => def.contains_key(signal),
+    }
+}
+
 impl ShvTree {
     pub(crate) fn from_definition(definition: ShvTreeDefinition) -> Self {
         let cache = definition
@@ -85,7 +93,7 @@ impl ShvTree {
             .flat_map(|(path, descr)| descr
                 .methods
                 .iter()
-                .filter(|mm| mm.flags.contains(shvrpc::metamethod::Flags::IsGetter))
+                .filter(|mm| method_has_signal(mm, SIG_CHNG))
                 .map(|mm| PathMethod(path.clone(), String::from(mm.name.clone())))
             )
             .map(|path_method| (path_method, RwLock::new(CachedValue(None))))
@@ -94,7 +102,7 @@ impl ShvTree {
         Self { cache, definition }
     }
 
-    pub(crate) fn update(&self, path: impl AsRef<str>, method: impl AsRef<str>, new_value: &RpcValue) -> Option<bool> {
+    pub(crate) fn update_value(&self, path: impl AsRef<str>, method: impl AsRef<str>, new_value: &RpcValue) -> Option<bool> {
         let path = path.as_ref();
         let method = method.as_ref();
         let locked_value = self.cache.get(&PathMethod(String::from(path), String::from(method)))?;
@@ -102,7 +110,7 @@ impl ShvTree {
         Some(value.update(new_value))
     }
 
-    pub(crate) fn read(&self, path: impl Into<String>, method: impl Into<String>) -> Option<RpcValue> {
+    pub(crate) fn read_value(&self, path: impl Into<String>, method: impl Into<String>) -> Option<RpcValue> {
         self.cache
             .get(&PathMethod(path.into(), method.into()))
             .map(RwLock::read)
@@ -119,11 +127,7 @@ impl ShvTree {
             .and_then(|descr| descr
                 .methods
                 .iter()
-                .find(|mm| mm.name == method &&
-                    match &mm.signals {
-                        SignalsDefinition::Static(def) => def.iter().any(|(name, _)| signal == *name),
-                        SignalsDefinition::Dynamic(def) => def.contains_key(signal),
-                    })
+                .find(|mm| mm.name == method && method_has_signal(mm, signal))
             )
             .is_some()
     }
@@ -187,11 +191,11 @@ mod tests {
         );
 
         // Getter exists
-        assert!(tree.read("dev/node", "getA").is_none());
+        assert!(tree.read_value("dev/node", "getA").is_none());
 
         // Non-getter should not be cached at all
-        assert!(tree.update("dev/node", "setA", &RpcValue::from(1)).is_none());
-        assert!(tree.read("dev/node", "setA").is_none());
+        assert!(tree.update_value("dev/node", "setA", &RpcValue::from(1)).is_none());
+        assert!(tree.read_value("dev/node", "setA").is_none());
     }
 
     #[test]
@@ -204,14 +208,14 @@ mod tests {
         let val = RpcValue::from(42);
 
         // Initially no cached value
-        assert_eq!(tree.read("dev/node", "getA"), None);
+        assert_eq!(tree.read_value("dev/node", "getA"), None);
 
         // Update should hit cache
-        let res = tree.update("dev/node", "getA", &val);
+        let res = tree.update_value("dev/node", "getA", &val);
         assert!(res.is_some());
 
         // Now value should be readable
-        assert_eq!(tree.read("dev/node", "getA"), Some(val));
+        assert_eq!(tree.read_value("dev/node", "getA"), Some(val));
     }
 
     #[test]
@@ -222,11 +226,11 @@ mod tests {
         );
 
         assert_eq!(
-            tree.update("dev/other", "getA", &RpcValue::from(1)),
+            tree.update_value("dev/other", "getA", &RpcValue::from(1)),
             None
         );
         assert_eq!(
-            tree.update("dev/node", "missing", &RpcValue::from(1)),
+            tree.update_value("dev/node", "missing", &RpcValue::from(1)),
             None
         );
     }

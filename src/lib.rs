@@ -4,6 +4,7 @@ use shvclient::clientnode::RpcError;
 use shvclient::shvproto::RpcValue;
 use shvclient::shvrpc::client::ClientConfig;
 use shvclient::{ClientCommandSender, ClientEventsReceiver};
+use shvrpc::RpcMessageMetaTags;
 
 use self::data::GateData;
 use self::rpc::{RpcHandler, rpc_handler};
@@ -25,12 +26,17 @@ pub(crate) fn send_rpc_signal(
     path: impl AsRef<str>,
     method: impl AsRef<str>,
     signal: impl AsRef<str>,
-    value: RpcValue
+    value: RpcValue,
+    repeat: bool,
 ) -> ShvRpcResult<()>
 {
     let (path, method, signal) = (path.as_ref(), method.as_ref(), signal.as_ref());
+    let mut msg = RpcMessage::new_signal_with_source(path, signal, method).with_param(value);
+    if repeat {
+        msg.set_tag(shvrpc::rpcmessage::Tag::Repeat as i32, Some(true));
+    }
     client_cmd_tx
-        .send_message(RpcMessage::new_signal_with_source(path, signal, method, Some(value)))
+        .send_message(msg)
         .map_err(|err| format!("Cannot send `{path}:{method}:{signal}` notification: {err}").into())
 }
 

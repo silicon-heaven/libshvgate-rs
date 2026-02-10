@@ -4,6 +4,7 @@ use futures::StreamExt as _;
 use libshvgate_rs::{JournalConfig, ShvGate, ShvGateConfig, ShvTreeDefinition};
 use log::LevelFilter;
 use shvclient::clientnode::METH_GET;
+use shvclient::shvproto::RpcValue;
 use shvrpc::rpcmessage::{RpcError, RpcErrorCode};
 
 #[derive(Debug)]
@@ -27,17 +28,25 @@ fn gate_config() -> ShvGateConfig {
     const TREE_YAML: &str = r#"
 version: "1"
 
-nodes:
+tree:
   device/temperature: Temperature
   device/status: Status
   device: Device
 
-node_methods:
+nodes:
   Device:
-    - name: config
+    - name: setConfig
       access: wr
       flags: [UserIDRequired]
       param: RpcMap
+      result: Null
+
+    - name: config
+      access: rd
+      flags: [IsGetter]
+      param: Null
+      result: RpcMap
+
 
   Temperature:
     - name: get
@@ -90,36 +99,42 @@ async fn main() {
     let sim_cfg_clone = sim_cfg.clone();
     ShvGate::new(gate_config())
         .await
-        .with_method_call_handler(move |_path, method, value, _client_cmd_tx, _gate_data| {
+        .with_method_call_handler(move |path, method, value, _client_cmd_tx, _gate_data| {
             let sim_cfg = sim_cfg_clone.clone();
             async move {
-                if method == "config" {
-                    let mut cfg = sim_cfg.lock().unwrap();
+                if path == "device" {
+                    if method == "setConfig" {
+                        let mut config = sim_cfg.lock().unwrap();
 
-                    if let Some(v) = value {
-                        let map = v.as_map();
-                        if let Some(v) = map.get("base_temp").map(|v| v.as_decimal().to_f64()) {
-                            cfg.base_temp = v;
+                        if let Some(v) = value {
+                            let map = v.as_map();
+                            if let Some(v) = map.get("base_temp").map(|v| v.as_decimal().to_f64()) {
+                                config.base_temp = v;
+                            }
+                            if let Some(v) = map.get("drift").map(|v| v.as_decimal().to_f64()) {
+                                config.drift = v;
+                            }
+                            if let Some(v) = map.get("period_ms").map(|v| v.as_u64()) {
+                                config.period_ms = v;
+                            }
                         }
-                        if let Some(v) = map.get("drift").map(|v| v.as_decimal().to_f64()) {
-                            cfg.drift = v;
-                        }
-                        if let Some(v) = map.get("period_ms").map(|v| v.as_u64()) {
-                            cfg.period_ms = v;
-                        }
+
+                        log::info!("New sim config: {:?}", *config);
+
+                        return Ok(RpcValue::from(()));
+                    } else if method == "config" {
+                        let config = sim_cfg.lock().unwrap();
+
+                        return Ok(format!(
+                                "base_temp={}, drift={}, period_ms={}",
+                                config.base_temp, config.drift, config.period_ms
+                        ).into());
                     }
-
-                    log::info!("New sim config: {:?}", *cfg);
-
-                    return Ok(format!(
-                            "config updated: base_temp={}, drift={}, period_ms={}",
-                            cfg.base_temp, cfg.drift, cfg.period_ms
-                    ));
                 }
 
                 Err(RpcError::new(
                         RpcErrorCode::MethodNotFound,
-                        "Unknown method",
+                        format!("Unknown method {path}:{method}"),
                 ))
             }
         })
@@ -154,6 +169,7 @@ async fn main() {
                         METH_GET,
                         temp.into(),
                         false,
+                        false,
                         &ccs,
                     ).await.ok();
 
@@ -161,6 +177,7 @@ async fn main() {
                         "device/status",
                         METH_GET,
                         status.into(),
+                        false,
                         false,
                         &ccs,
                     ).await.ok();

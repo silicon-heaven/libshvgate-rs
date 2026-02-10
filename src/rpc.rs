@@ -3,7 +3,7 @@ use std::sync::Arc;
 use futures::future::BoxFuture;
 use shvclient::ClientCommandSender;
 use shvclient::appnodes::DOT_APP_METHODS;
-use shvclient::clientnode::{Method, RequestHandlerResult, StaticNode, err_unresolved_request};
+use shvclient::clientnode::{Method, RequestHandlerResult, SIG_CHNG, StaticNode, err_unresolved_request};
 use shvclient::shvproto::RpcValue;
 use shvrpc::metamethod::{AccessLevel, MetaMethod, Flags as MetaMethodFlags};
 use shvrpc::rpcmessage::{RpcError, RpcErrorCode};
@@ -11,6 +11,7 @@ use shvrpc::util::children_on_path;
 use shvrpc::{RpcMessage, RpcMessageMetaTags as _};
 
 use crate::fs::fs_request_handler;
+use crate::tree::method_has_signal;
 
 pub(crate) async fn rpc_handler(
     rq: RpcMessage,
@@ -101,7 +102,7 @@ pub(crate) async fn rpc_handler(
                         }
                     };
                     let method = m.method().to_owned();
-                    if mm.flags.contains(MetaMethodFlags::IsGetter) {
+                    if method_has_signal(mm, SIG_CHNG) {
                         m.resolve(methods, async move || {
                             log_user_command(&gate_data, &rq, &client_cmd_tx).await;
                             Ok(gate_data.cached_value(path, method))

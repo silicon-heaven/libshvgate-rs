@@ -1,6 +1,6 @@
 version: "1"
 
-nodes:
+tree:
   voltage/V1: Voltage
   voltage/V1/value: VoltageValue
   log: Log
@@ -28,7 +28,7 @@ methods:
     flags: [UserIDRequired]
 
 
-node_methods:
+nodes:
   Voltage:
     - *method_device_type
 

@@ -6,9 +6,8 @@ use futures::io::BufWriter;
 use shvclient::ClientCommandSender;
 use shvclient::clientnode::SIG_CHNG;
 use shvclient::shvproto::{DateTime, IMap, RpcValue, make_imap, make_map};
-use shvrpc::datachange::{DataChange, ValueFlags};
+use shvrpc::datachange::ValueFlags;
 use shvrpc::journalentry::JournalEntry;
-use shvrpc::journalrw::JournalWriterLog2;
 use shvrpc::metamethod::AccessLevel;
 use shvrpc::{RpcMessage, RpcMessageMetaTags as _};
 use tokio::fs::File;
@@ -24,7 +23,6 @@ pub struct JournalConfig {
     pub max_journal_size: u64,
 }
 
-type FileJournalWriterLog2 = JournalWriterLog2<BufWriter<Compat<File>>>;
 type FileJournalWriterLog3 = JournalWriterLog3<BufWriter<Compat<File>>>;
 
 struct JournalData {
@@ -106,36 +104,37 @@ impl GateData {
         self.journal_append(&journal_entry)
             .await
             .map_err(|err| format!("Cannot write a command request to the journal, request: `{rq}`, error: {err}", rq = cmd_rq.to_cpon()))?;
-        send_rpc_signal(client_cmd_tx, journal_entry.path.clone(), journal_entry.source.clone(), CMDLOG, journalentry_to_rpcvalue(journal_entry))
+        send_rpc_signal(
+            client_cmd_tx,
+            journal_entry.path.clone(),
+            journal_entry.source.clone(),
+            CMDLOG,
+            journalentry_to_rpcvalue(journal_entry),
+            false
+        )
     }
 
-    // TODO: signal parameter, log only *chng signals
     pub async fn update_value(
         &self,
         path: impl AsRef<str>,
         method: impl AsRef<str>,
         new_value: RpcValue,
         force_chng: bool,
+        repeat: bool,
         client_cmd_tx: &ClientCommandSender
     ) -> shvrpc::Result<bool>
     {
         let path = path.as_ref();
         let method = method.as_ref();
-        match self.tree.update(path, method, &new_value) {
+        match self.tree.update_value(path, method, &new_value) {
             None => Err(format!("Cannot update value. Cache for method `{path}:{method}` does not exist").into()),
             Some(updated) => {
-                if (updated || force_chng) && self.tree.method_has_signal(path, method, SIG_CHNG) {
-                    let now = DateTime::now();
-                    let data_change = DataChange {
-                        date_time: Some(now),
-                        value_flags: ValueFlags::SPONTANEOUS,
-                        ..DataChange::from(new_value.clone())
-                    };
-                    let entry = datachange_to_journal_entry(path, method, data_change.clone(), &now);
+                if updated || force_chng {
+                    let entry = value_to_journal_entry(DateTime::now(), path, method, SIG_CHNG, new_value.clone(), repeat);
                     self.journal_append(&entry)
                         .await
                         .map_err(|err| format!("Journal write error: {err}"))?;
-                    send_rpc_signal(client_cmd_tx, path, method, SIG_CHNG, data_change.into())?;
+                    send_rpc_signal(client_cmd_tx, path, method, SIG_CHNG, new_value, repeat)?;
                 }
                 Ok(updated)
             }
@@ -201,7 +200,7 @@ impl GateData {
 
 
     pub fn cached_value(&self, path: impl Into<String>, method: impl Into<String>) -> Option<RpcValue> {
-        self.tree.read(path, method)
+        self.tree.read_value(path, method)
     }
 
     pub fn tree_definition(&self) -> &ShvTreeDefinition {
@@ -254,26 +253,27 @@ async fn trim_dir(
     Ok(())
 }
 
-fn datachange_to_journal_entry(path: impl Into<String>, method: impl Into<String>, data_change: DataChange, default_date_time: &DateTime) -> JournalEntry {
+fn value_to_journal_entry(
+    datetime: DateTime,
+    path: impl Into<String>,
+    method: impl Into<String>,
+    signal: impl Into<String>,
+    value: impl Into<RpcValue>,
+    repeat: bool,
+) -> JournalEntry
+{
     JournalEntry {
-        epoch_msec: data_change.date_time.as_ref().map_or_else(|| default_date_time.epoch_msec(), |dt| dt.epoch_msec()),
+        epoch_msec: datetime.epoch_msec(),
         path: path.into(),
-        signal: SIG_CHNG.into(),
+        signal: signal.into(),
         source: method.into(),
-        value: data_change.value,
+        value: value.into(),
         access_level: AccessLevel::Read as _,
-        short_time: data_change.short_time.unwrap_or(-1),
+        short_time: -1,
         user_id: None,
-        repeat: !data_change.value_flags.contains(ValueFlags::SPONTANEOUS),
-        provisional: data_change.value_flags.contains(ValueFlags::PROVISIONAL),
+        repeat,
+        provisional: false
     }
-}
-
-fn datetime_to_log2_filename(dt: &DateTime) -> String {
-    dt
-        .to_chrono_datetime()
-        .format("%Y-%m-%dT%H-%M-%S-%3f.log2")
-        .to_string()
 }
 
 async fn create_journal_file(base_path: impl AsRef<Path>, file_name: impl AsRef<Path>) -> std::io::Result<File> {
@@ -288,12 +288,6 @@ async fn create_journal_file(base_path: impl AsRef<Path>, file_name: impl AsRef<
                 err.kind(),
                 format!("Cannot create journal file `{path}`: {err}", path = path.display())
         ))
-}
-
-async fn create_log2_writer(base_path: impl AsRef<Path>, date_time: &DateTime) -> Result<FileJournalWriterLog2, std::io::Error> {
-    create_journal_file(base_path, datetime_to_log2_filename(date_time))
-        .await
-        .map(|file| FileJournalWriterLog2::new(BufWriter::new(file.compat_write())))
 }
 
 fn datetime_to_log3_filename(dt: &DateTime) -> String {
