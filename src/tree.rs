@@ -102,12 +102,13 @@ impl ShvTree {
         Self { cache, definition }
     }
 
-    pub(crate) fn update_value(&self, path: impl AsRef<str>, method: impl AsRef<str>, new_value: &RpcValue) -> Option<bool> {
+    pub(crate) fn update_value(&self, path: impl AsRef<str>, method: impl AsRef<str>, new_value: &RpcValue) -> Result<bool, String> {
         let path = path.as_ref();
         let method = method.as_ref();
-        let locked_value = self.cache.get(&PathMethod(String::from(path), String::from(method)))?;
+        let locked_value = self.cache.get(&PathMethod(String::from(path), String::from(method)))
+            .ok_or_else(|| format!("Cache for method `{path}:{method}` does not exist"))?;
         let mut value = locked_value.write().unwrap();
-        Some(value.update(new_value))
+        Ok(value.update(new_value))
     }
 
     pub(crate) fn read_value(&self, path: impl Into<String>, method: impl Into<String>) -> Option<RpcValue> {

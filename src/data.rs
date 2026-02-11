@@ -126,19 +126,17 @@ impl GateData {
     {
         let path = path.as_ref();
         let method = method.as_ref();
-        match self.tree.update_value(path, method, &new_value) {
-            None => Err(format!("Cannot update value. Cache for method `{path}:{method}` does not exist").into()),
-            Some(updated) => {
-                if updated || force_chng {
-                    let entry = value_to_journal_entry(DateTime::now(), path, method, SIG_CHNG, new_value.clone(), repeat);
-                    self.journal_append(&entry)
-                        .await
-                        .map_err(|err| format!("Journal write error: {err}"))?;
-                    send_rpc_signal(client_cmd_tx, path, method, SIG_CHNG, new_value, repeat)?;
-                }
-                Ok(updated)
-            }
+        let updated = self.tree
+            .update_value(path, method, &new_value)
+            .map_err(|err| format!("Cannot update value: {err}"))?;
+        if updated || force_chng {
+            let entry = value_to_journal_entry(DateTime::now(), path, method, SIG_CHNG, new_value.clone(), repeat);
+            self.journal_append(&entry)
+                .await
+                .map_err(|err| format!("Journal write error: {err}"))?;
+            send_rpc_signal(client_cmd_tx, path, method, SIG_CHNG, new_value, repeat)?;
         }
+        Ok(updated)
     }
 
     async fn journal_append(&self, entry: &JournalEntry) -> std::io::Result<()> {
