@@ -315,7 +315,7 @@ pub enum Log3IKey {
 }
 
 
-pub fn journal_entry_to_log3_imap<'a>(entry: JournalEntry) -> IMap {
+pub fn journal_entry_to_log3_imap(entry: JournalEntry) -> IMap {
     let time = match entry.epoch_msec {
         ..=0 =>  None,
         val => Some(DateTime::from_epoch_msec(val)),
