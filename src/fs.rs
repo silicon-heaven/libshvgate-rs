@@ -122,41 +122,34 @@ fn rpc_error_method_not_found() -> RpcError {
     RpcError::new(RpcErrorCode::MethodNotFound, "Method not found")
 }
 
-async fn with_file_reader<F, Fut, R>(
+async fn file_reader(
     path: impl AsRef<Path>,
     offset: u64,
     size: Option<u64>,
-    process: F,
-) -> tokio::io::Result<R>
-where
-    F: FnOnce(Box<dyn tokio::io::AsyncBufRead + Unpin + Send>) -> Fut + Send,
-    Fut: Future<Output = tokio::io::Result<R>> + Send,
+) -> std::io::Result<tokio::io::Take<tokio::io::BufReader<tokio::fs::File>>>
 {
     const MAX_READ_SIZE: u64 = 1 << 20;
     let mut file = tokio::fs::File::open(path).await?;
     file.seek(std::io::SeekFrom::Start(offset)).await?;
     let file_size = file.metadata().await?.len();
     let size = size.unwrap_or(file_size).min(file_size).min(MAX_READ_SIZE);
-    let reader = tokio::io::BufReader::new(file).take(size);
-    process(Box::new(reader)).await
+    Ok(tokio::io::BufReader::new(file).take(size))
 }
 
 async fn read_file(path: impl AsRef<Path>, offset: u64, size: Option<u64>) -> tokio::io::Result<Vec<u8>> {
-    with_file_reader(path, offset, size, |mut reader| async move {
-        let mut res = Vec::new();
-        reader.read_to_end(&mut res).await?;
-        Ok(res)
-    }).await
+    let mut reader = file_reader(path, offset, size).await?;
+    let mut res = Vec::new();
+    reader.read_to_end(&mut res).await?;
+    Ok(res)
 }
 
 async fn compress_file(path: impl AsRef<Path>, offset: u64, size: Option<u64>) -> tokio::io::Result<(Vec<u8>, u64)> {
-    with_file_reader(path, offset, size, |mut reader| async move {
-        let mut res = Vec::new();
-        let mut encoder = GzipEncoder::new(&mut res);
-        let bytes_read = tokio::io::copy_buf(&mut reader, &mut encoder).await?;
-        encoder.shutdown().await?;
-        Ok((res, bytes_read))
-    }).await
+    let mut reader = file_reader(path, offset, size).await?;
+    let mut res = Vec::new();
+    let mut encoder = GzipEncoder::new(&mut res);
+    let bytes_read = tokio::io::copy_buf(&mut reader, &mut encoder).await?;
+    encoder.shutdown().await?;
+    Ok((res, bytes_read))
 }
 
 pub async fn fs_request_handler(
