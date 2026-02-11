@@ -94,25 +94,42 @@ impl TryFrom<&RpcValue> for ReadParams {
             return Ok(Self::default());
         }
 
-        let map: rpcvalue::Map = value.try_into()?;
-
-        let parse_param = |param_name: &str| -> Result<Option<u64>, String> {
-            match map.get(param_name) {
-                None => Ok(None),
-                Some(val) => {
-                    i64::try_from(val)
-                        .map_err(|e| e.to_string())
-                        .and_then(|v| u64::try_from(v)
-                            .map_err(|e| e.to_string())
-                        )
-                        .map_err(|e| format!("Error parsing `{param_name}` parameter: {e}"))
-                        .map(Some)
-                }
-            }
+        let parse_value = |val: &RpcValue| {
+            i64::try_from(val)
+                .map_err(|e| e.to_string())
+                .and_then(|v| u64::try_from(v)
+                    .map_err(|e| e.to_string())
+                )
+                .map(Some)
         };
 
-        let offset = parse_param("offset")?;
-        let size = parse_param("size")?;
+        let (offset, size) = match &value.value {
+            rpcvalue::Value::Map(map) => {
+                let parse_param = |param_name: &str| -> Result<Option<u64>, String> {
+                    match map.get(param_name) {
+                        None => Ok(None),
+                        Some(val) => parse_value(val)
+                            .map_err(|e| format!("Error parsing `{param_name}` parameter: {e}")),
+                    }
+                };
+
+                let offset = parse_param("offset")?;
+                let size = parse_param("size")?;
+
+                (offset, size)
+            }
+            rpcvalue::Value::List(list) => {
+                match list.as_slice() {
+                    [offset, size] => {
+                        let offset = parse_value(offset).map_err(|e| format!("Error parsing `offset` parameter: {e}"))?;
+                        let size = parse_value(size).map_err(|e| format!("Error parsing `size` parameter: {e}"))?;
+                        (offset, size)
+                    }
+                    _ => return Err("Wrong format ReadParam list, expected [offset, size]".to_string())
+                }
+            }
+            _ => return Err(format!("Wrong ReadParam type. Expected a List or a Map, have {ty}", ty = value.type_name()))
+        };
 
         Ok(Self { offset, size })
     }
