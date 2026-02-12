@@ -31,9 +31,9 @@ struct JournalData {
     entries_count: u64,
 }
 
-pub struct GateData {
-    pub(crate) start_time: std::time::Instant,
-    pub(crate) journal_config: JournalConfig,
+pub struct GateContext {
+    pub start_time: std::time::Instant,
+    pub journal_config: JournalConfig,
     tree: ShvTree,
     journal_data: RwLock<JournalData>,
 }
@@ -86,7 +86,7 @@ pub(crate) fn rpc_command_to_journal_entry(rq: &RpcMessage) -> JournalEntry {
     }
 }
 
-impl GateData {
+impl GateContext {
     pub(crate) async fn new(journal_config: JournalConfig, tree: ShvTree) -> shvrpc::Result<Self> {
         let log_writer = create_log3_writer(&journal_config.root_path, &DateTime::now()).await?;
         let snapshot_keys = tree.snapshot_keys().cloned().collect();

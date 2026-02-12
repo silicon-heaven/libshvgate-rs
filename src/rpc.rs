@@ -16,7 +16,7 @@ use crate::tree::method_has_signal;
 pub(crate) async fn rpc_handler(
     rq: RpcMessage,
     client_cmd_tx: ClientCommandSender,
-    gate_data: Arc<crate::GateData>,
+    gate_ctx: Arc<crate::GateContext>,
     app_rpc_handler: Option<RpcHandler>,
 ) -> RequestHandlerResult
 {
@@ -39,7 +39,7 @@ pub(crate) async fn rpc_handler(
                 Method::Ls(ls) => {
                     let ls_handler = async move || {
                         let mut nodes = vec![".app".to_string(), ".history".to_string()];
-                        nodes.extend(children_on_path(&gate_data.tree_definition().nodes_description, "").unwrap_or_default());
+                        nodes.extend(children_on_path(&gate_ctx.tree_definition().nodes_description, "").unwrap_or_default());
                         Ok(nodes)
                     };
                     ls.resolve(METHODS, ls_handler)
@@ -48,7 +48,7 @@ pub(crate) async fn rpc_handler(
                     METH_VERSION => m.resolve(METHODS, async || Ok(env!("CARGO_PKG_VERSION"))),
                     METH_UPTIME => m.resolve(METHODS, async move || Ok(
                             humantime::format_duration(
-                                std::time::Duration::from_secs(gate_data.start_time.elapsed().as_secs())
+                                std::time::Duration::from_secs(gate_ctx.start_time.elapsed().as_secs())
                             )
                             .to_string())
                     ),
@@ -73,10 +73,10 @@ pub(crate) async fn rpc_handler(
             }
         }
         NodeType::DotHistoryFiles(sub_path) => {
-            fs_request_handler(&gate_data.journal_config.root_path, sub_path, method, param).await
+            fs_request_handler(&gate_ctx.journal_config.root_path, sub_path, method, param).await
         }
         NodeType::Device => {
-            let nodes_description = &gate_data.tree_definition().nodes_description;
+            let nodes_description = &gate_ctx.tree_definition().nodes_description;
             let Some(children) = children_on_path(nodes_description, &path) else {
                 return err_unresolved_request()
             };
@@ -92,7 +92,7 @@ pub(crate) async fn rpc_handler(
                         return err_unresolved_request()
                     };
                     let is_user_id_required = mm.flags.contains(MetaMethodFlags::UserIDRequired);
-                    let log_user_command = async move |gate_data: &Arc<crate::data::GateData>, rq: &RpcMessage, client_cmd_tx: &ClientCommandSender| {
+                    let log_user_command = async move |gate_data: &Arc<crate::data::GateContext>, rq: &RpcMessage, client_cmd_tx: &ClientCommandSender| {
                         if is_user_id_required {
                             // Log commands that require user ID in the request metadata
                             gate_data
@@ -104,19 +104,19 @@ pub(crate) async fn rpc_handler(
                     let method = m.method().to_owned();
                     if method_has_signal(mm, SIG_CHNG) {
                         m.resolve(methods, async move || {
-                            log_user_command(&gate_data, &rq, &client_cmd_tx).await;
-                            Ok(gate_data.cached_value(path, method))
+                            log_user_command(&gate_ctx, &rq, &client_cmd_tx).await;
+                            Ok(gate_ctx.cached_value(path, method))
                         })
                     } else {
                         m.resolve(methods, async move || {
-                            log_user_command(&gate_data, &rq, &client_cmd_tx).await;
+                            log_user_command(&gate_ctx, &rq, &client_cmd_tx).await;
                             let Some(app_handler) = app_rpc_handler else {
                                 return Err(RpcError::new(
                                         RpcErrorCode::NotImplemented,
                                         format!("'{path}:{method}()' is defined but not implemented")
                                 ))
                             };
-                            app_handler(path, method, param, client_cmd_tx, gate_data).await
+                            app_handler(path, method, param, client_cmd_tx, gate_ctx).await
                         })
                     }
                 }
@@ -165,4 +165,4 @@ impl<'a> NodeType<'a> {
 
 pub type RpcResult = Result<RpcValue, RpcError>;
 pub type RpcResultFuture = BoxFuture<'static, RpcResult>;
-pub type RpcHandler = Arc<dyn Fn(String, String, Option<RpcValue>, ClientCommandSender, Arc<crate::GateData>) -> RpcResultFuture + Send + Sync>;
+pub type RpcHandler = Arc<dyn Fn(String, String, Option<RpcValue>, ClientCommandSender, Arc<crate::GateContext>) -> RpcResultFuture + Send + Sync>;

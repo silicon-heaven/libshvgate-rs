@@ -6,7 +6,7 @@ use shvclient::shvrpc::client::ClientConfig;
 use shvclient::{ClientCommandSender, ClientEventsReceiver};
 use shvrpc::RpcMessageMetaTags;
 
-use self::data::GateData;
+use self::data::GateContext;
 use self::rpc::{RpcHandler, rpc_handler};
 use self::tree::ShvTree;
 
@@ -41,7 +41,7 @@ pub(crate) fn send_rpc_signal(
 }
 
 pub struct ShvGate {
-    data: Arc<GateData>,
+    context: Arc<GateContext>,
     app_rpc_handler: Option<RpcHandler>,
 }
 
@@ -54,20 +54,27 @@ pub struct ShvGateConfig {
 impl ShvGate {
     pub async fn new(config: ShvGateConfig) -> Self {
         Self {
-            data: Arc::new(GateData::new(config.journal, ShvTree::from_definition(config.tree)).await.unwrap()),
+            context: Arc::new(
+                         GateContext::new(
+                             config.journal,
+                             ShvTree::from_definition(config.tree)
+                         )
+                         .await
+                         .unwrap()
+                     ),
             app_rpc_handler: None,
         }
     }
 
     pub fn with_method_call_handler<F, Fut, Ret>(mut self, handler: F) -> Self
         where
-            F: Fn(String, String, Option<RpcValue>, ClientCommandSender, Arc<GateData>) -> Fut + Sync + Send + 'static,
+            F: Fn(String, String, Option<RpcValue>, ClientCommandSender, Arc<GateContext>) -> Fut + Sync + Send + 'static,
             Fut: Future<Output = Result<Ret, RpcError>> + Send + 'static,
             Ret: Into<RpcValue>,
     {
         self.app_rpc_handler = Some(
-            Arc::new(move |path, method, param, ccs, data| {
-                let fut = handler(path, method, param, ccs, data);
+            Arc::new(move |path, method, param, ccs, ctx| {
+                let fut = handler(path, method, param, ccs, ctx);
                 Box::pin(async move { fut.await.map(Into::into) })
             })
         );
@@ -76,20 +83,20 @@ impl ShvGate {
 
     pub async fn run<H>(self, client_config: &ClientConfig, on_client_start: H) -> ShvRpcResult<()>
     where
-        H: FnOnce(ClientCommandSender, ClientEventsReceiver, Arc<GateData>)
+        H: FnOnce(ClientCommandSender, ClientEventsReceiver, Arc<GateContext>)
     {
         let rpc_handler = {
-            let gate_data = self.data.clone();
+            let gate_ctx = self.context.clone();
             let app_rpc_handler = self.app_rpc_handler.clone();
             move |rq, cmd_sender|
-                rpc_handler(rq, cmd_sender, gate_data.clone(), app_rpc_handler.clone())
+                rpc_handler(rq, cmd_sender, gate_ctx.clone(), app_rpc_handler.clone())
         };
         shvclient::Client::new()
             .mount_dynamic("", rpc_handler)
             .run_with_init(client_config, {
-                let gate_data = self.data.clone();
+                let gate_ctx = self.context.clone();
                 |client_cmd_tx, client_evt_rx|
-                    on_client_start(client_cmd_tx, client_evt_rx, gate_data)
+                    on_client_start(client_cmd_tx, client_evt_rx, gate_ctx)
             })
             .await
     }

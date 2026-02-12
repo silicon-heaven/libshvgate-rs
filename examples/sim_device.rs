@@ -99,7 +99,7 @@ async fn main() {
     let sim_cfg_clone = sim_cfg.clone();
     ShvGate::new(gate_config())
         .await
-        .with_method_call_handler(move |path, method, value, _client_cmd_tx, _gate_data| {
+        .with_method_call_handler(move |path, method, value, _client_cmd_tx, _gate_context| {
             let sim_cfg = sim_cfg_clone.clone();
             async move {
                 if path == "device" {
