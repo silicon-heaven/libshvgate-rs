@@ -15,7 +15,7 @@ use tokio::sync::RwLock;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
 use crate::send_rpc_signal;
-use crate::tree::{CachedValue, PathMethod, ShvTree, ShvTreeDefinition};
+use crate::tree::{CachedValue, PathMethod, PathMethodKey, ShvTree, ShvTreeDefinition};
 
 pub struct JournalConfig {
     pub root_path: PathBuf,
@@ -143,7 +143,7 @@ impl GateContext {
         let journal_data = &mut *self.journal_data.write().await;
         let append_entry = async |journal_data: &mut JournalData| {
             journal_data.log_writer.append(entry.clone()).await?;
-            journal_data.snapshot_keys.remove(&PathMethod(entry.path.clone(), entry.source.clone()));
+            journal_data.snapshot_keys.remove((&entry.path, &entry.source).as_key());
             journal_data.entries_count +=1;
             Ok(())
         };
@@ -197,7 +197,7 @@ impl GateContext {
     }
 
 
-    pub fn cached_value(&self, path: impl Into<String>, method: impl Into<String>) -> Option<RpcValue> {
+    pub fn cached_value(&self, path: impl AsRef<str>, method: impl AsRef<str>) -> Option<RpcValue> {
         self.tree.read_value(path, method)
     }
 

@@ -4,11 +4,75 @@ use std::sync::RwLock;
 use shvclient::clientnode::{MetaMethod, SIG_CHNG};
 use shvclient::shvproto::RpcValue;
 use shvrpc::metamethod::SignalsDefinition;
+use shvrpc::typeinfo::TypeInfo;
 
 mod yaml;
 
 #[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq)]
 pub(crate) struct PathMethod(pub(crate) String, pub(crate) String);
+
+pub(crate) trait PathMethodKey {
+    fn path(&self) -> &str;
+    fn method(&self) -> &str;
+
+    fn as_key(&self) -> &dyn PathMethodKey
+    where
+        Self: Sized
+    {
+            self
+    }
+}
+
+impl PathMethodKey for PathMethod {
+    fn path(&self) -> &str {
+        &self.0
+    }
+
+    fn method(&self) -> &str {
+        &self.1
+    }
+}
+
+impl<A, B> PathMethodKey for (A, B)
+where
+    A: AsRef<str>,
+    B: AsRef<str>,
+{
+    fn path(&self) -> &str {
+        self.0.as_ref()
+    }
+
+    fn method(&self) -> &str {
+        self.1.as_ref()
+    }
+}
+
+impl PartialEq for dyn PathMethodKey + '_ {
+    fn eq(&self, other: &Self) -> bool {
+        self.path() == other.path() && self.method() == other.method()
+    }
+}
+
+impl Eq for dyn PathMethodKey + '_ { }
+
+impl PartialOrd for dyn PathMethodKey + '_ {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for dyn PathMethodKey + '_ {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.path().cmp(other.path())
+            .then_with(|| self.method().cmp(other.method()))
+    }
+}
+
+impl<'a> std::borrow::Borrow<dyn PathMethodKey + 'a> for PathMethod {
+    fn borrow(&self) -> &(dyn PathMethodKey + 'a) {
+        self
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct CachedValue(pub(crate) Option<RpcValue>);
@@ -108,15 +172,15 @@ impl ShvTree {
     pub(crate) fn update_value(&self, path: impl AsRef<str>, method: impl AsRef<str>, new_value: &RpcValue) -> Result<bool, String> {
         let path = path.as_ref();
         let method = method.as_ref();
-        let locked_value = self.cache.get(&PathMethod(String::from(path), String::from(method)))
+        let locked_value = self.cache.get((path, method).as_key())
             .ok_or_else(|| format!("Cache for method `{path}:{method}` does not exist"))?;
         let mut value = locked_value.write().expect("Value cache mutex should not be poisoned");
         Ok(value.update(new_value))
     }
 
-    pub(crate) fn read_value(&self, path: impl Into<String>, method: impl Into<String>) -> Option<RpcValue> {
+    pub(crate) fn read_value(&self, path: impl AsRef<str>, method: impl AsRef<str>) -> Option<RpcValue> {
         self.cache
-            .get(&PathMethod(path.into(), method.into()))
+            .get((path, method).as_key())
             .map(RwLock::read)
             .map(Result::unwrap)
             .as_deref()
