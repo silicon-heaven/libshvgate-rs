@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex, Once};
 
+use futures::FutureExt;
 use futures::StreamExt as _;
 use libshvgate_rs::{JournalConfig, ShvGate, ShvGateConfig, ShvTreeDefinition};
 use log::LevelFilter;
@@ -20,7 +21,7 @@ fn init_logger() {
         simple_logger::SimpleLogger::new()
             .with_level(LevelFilter::Debug)
             .init()
-            .unwrap();
+            .expect("Logger should be initialized");
     });
 }
 
@@ -63,7 +64,7 @@ nodes:
       result: Bool
 "#;
 
-    let tree = ShvTreeDefinition::from_yaml(TREE_YAML);
+    let tree = ShvTreeDefinition::from_yaml(TREE_YAML).expect("Tree definition must be correct");
 
     ShvGateConfig {
         tree,
@@ -99,12 +100,13 @@ async fn main() {
     let sim_cfg_clone = sim_cfg.clone();
     ShvGate::new(gate_config())
         .await
+        .expect("ShvGate must be instantiated")
         .with_method_call_handler(move |path, method, value, _client_cmd_tx, _gate_context| {
             let sim_cfg = sim_cfg_clone.clone();
             async move {
                 if path == "device" {
                     if method == "setConfig" {
-                        let mut config = sim_cfg.lock().unwrap();
+                        let mut config = sim_cfg.lock().expect("The mutex should not get poisoned");
 
                         if let Some(v) = value {
                             let map = v.as_map();
@@ -114,7 +116,7 @@ async fn main() {
                             if let Some(v) = map.get("drift").map(|v| v.as_decimal().to_f64()) {
                                 config.drift = v;
                             }
-                            if let Some(v) = map.get("period_ms").map(|v| v.as_u64()) {
+                            if let Some(v) = map.get("period_ms").map(RpcValue::as_u64) {
                                 config.period_ms = v;
                             }
                         }
@@ -123,7 +125,7 @@ async fn main() {
 
                         return Ok(RpcValue::from(()));
                     } else if method == "config" {
-                        let config = sim_cfg.lock().unwrap();
+                        let config = sim_cfg.lock().expect("The mutex should not get poisoned");
 
                         return Ok(format!(
                                 "base_temp={}, drift={}, period_ms={}",
@@ -138,7 +140,7 @@ async fn main() {
                 ))
             }
         })
-        .run(&client_config, move |ccs, mut cer, gate_data| {
+        .run(&client_config, move |ccs, mut cer, gate_context| {
             shvclient::runtime::spawn_task(async move {
                 // Wait until connected
                 while let Some(event) = cer.next().await {
@@ -151,8 +153,12 @@ async fn main() {
                 let mut temp: f64;
                 let mut status = false;
                 loop {
+                    if let Some(client_event) = cer.next().now_or_never()
+                        && client_event.is_none_or(|event| matches!(event, shvclient::ClientEvent::Disconnected)) {
+                            break;
+                    }
                     let (base, drift, period) = {
-                        let cfg = sim_cfg.lock().unwrap();
+                        let cfg = sim_cfg.lock().expect("The mutex should not get poisoned");
                         let base = cfg.base_temp;
                         let drift = cfg.drift;
                         let period = cfg.period_ms;
@@ -164,7 +170,7 @@ async fn main() {
 
                     log::debug!("Sim temp={temp:.2}, status={status}");
 
-                    gate_data.update_value(
+                    gate_context.update_value(
                         "device/temperature",
                         METH_GET,
                         temp.into(),
@@ -173,7 +179,7 @@ async fn main() {
                         &ccs,
                     ).await.ok();
 
-                    gate_data.update_value(
+                    gate_context.update_value(
                         "device/status",
                         METH_GET,
                         status.into(),
@@ -187,5 +193,5 @@ async fn main() {
             }).detach();
         })
         .await
-        .unwrap();
+        .ok();
     }

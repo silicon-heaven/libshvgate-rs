@@ -41,28 +41,32 @@ pub struct ShvTreeDefinition {
 }
 
 impl ShvTreeDefinition {
-    pub fn from_yaml(input: impl AsRef<str>) -> Self {
+    pub fn from_yaml(input: impl AsRef<str>) -> Result<Self, String> {
         let mut yaml_value: serde_yaml_ng::Value = serde_yaml_ng::from_str(input.as_ref())
-            .unwrap_or_else(|err| panic!("Bad YAML definition: {err}"));
-        yaml_value.apply_merge().unwrap_or_else(|err| panic!("Cannot merge YAML anchors: {err}"));
-        let tree_def: yaml::TreeDefinition = serde_yaml_ng::from_value(yaml_value)
-            .unwrap_or_else(|err| panic!("Bad tree definition: {err}"));
+            .map_err(|err| format!("Bad YAML definition: {err}"))?;
+        yaml_value.apply_merge().map_err(|err| format!("Cannot merge YAML anchors: {err}"))?;
+        let tree_document: yaml::TreeDocument = serde_yaml_ng::from_value(yaml_value)
+            .map_err(|err| format!("Bad tree definition: {err}"))?;
 
         let mut nodes_description = BTreeMap::new();
 
-        for (path, node_type_name) in tree_def.tree {
-            let methods = tree_def
-                .nodes
-                .get(&node_type_name)
-                .into_iter()
-                .flatten()
-                .map(|m| MetaMethod::from(m.clone()))
-                .collect();
+        match tree_document {
+            yaml::TreeDocument::V1(tree_definition) => {
+                for (path, node_type_name) in tree_definition.tree {
+                    let methods = tree_definition
+                        .nodes
+                        .get(&node_type_name)
+                        .into_iter()
+                        .flatten()
+                        .map(|m| MetaMethod::from(m.clone()))
+                        .collect();
 
-            nodes_description.insert(path, NodeDescription { methods });
+                    nodes_description.insert(path, NodeDescription { methods });
+                }
+            }
         }
 
-        Self { nodes_description }
+        Ok(Self { nodes_description })
     }
 
     // pub fn from_typeinfo(input: &str) -> Self {
@@ -146,19 +150,19 @@ mod tests {
     use std::collections::BTreeMap;
     use shvrpc::metamethod::{MetaMethod, Flags};
 
-    fn getter_method(name: &str, signals: SignalsDefinition) -> MetaMethod {
+    fn cached_method(name: &str) -> MetaMethod {
         MetaMethod::new(
             name.to_owned(),
-            Flags::IsGetter,
+            Flags::None,
             shvrpc::metamethod::AccessLevel::Read,
             "",
             "",
-            signals,
+            SignalsDefinition::Static(&[("chng", None)]),
             ""
         )
     }
 
-    fn non_getter_method(name: &str) -> MetaMethod {
+    fn non_cached_method(name: &str) -> MetaMethod {
         MetaMethod::new(
             name.to_owned(),
             Flags::empty(),
@@ -181,20 +185,21 @@ mod tests {
     }
 
     #[test]
-    fn from_definition_caches_only_getters() {
+    fn caches_only_chng_methods() {
         let tree = tree_with_methods(
             "dev/node",
             vec![
-                getter_method("getA", SignalsDefinition::Static(&[])),
-                non_getter_method("setA"),
+                cached_method("getA"),
+                non_cached_method("setA"),
             ],
         );
 
         // Getter exists
-        assert!(tree.read_value("dev/node", "getA").is_none());
+        assert!(tree.update_value("dev/node", "getA", &RpcValue::from(1)).is_ok());
+        assert_eq!(tree.read_value("dev/node", "getA"), Some(RpcValue::from(1)));
 
         // Non-getter should not be cached at all
-        assert!(tree.update_value("dev/node", "setA", &RpcValue::from(1)).is_none());
+        assert!(tree.update_value("dev/node", "setA", &RpcValue::from(1)).is_err());
         assert!(tree.read_value("dev/node", "setA").is_none());
     }
 
@@ -202,7 +207,7 @@ mod tests {
     fn update_and_read_roundtrip() {
         let tree = tree_with_methods(
             "dev/node",
-            vec![getter_method("getA", SignalsDefinition::Static(&[]))],
+            vec![cached_method("getA")],
         );
 
         let val = RpcValue::from(42);
@@ -212,7 +217,7 @@ mod tests {
 
         // Update should hit cache
         let res = tree.update_value("dev/node", "getA", &val);
-        assert!(res.is_some());
+        assert_eq!(res, Ok(true));
 
         // Now value should be readable
         assert_eq!(tree.read_value("dev/node", "getA"), Some(val));
@@ -222,17 +227,11 @@ mod tests {
     fn update_unknown_path_or_method_returns_none() {
         let tree = tree_with_methods(
             "dev/node",
-            vec![getter_method("getA", SignalsDefinition::Static(&[]))],
+            vec![cached_method("getA")],
         );
 
-        assert_eq!(
-            tree.update_value("dev/other", "getA", &RpcValue::from(1)),
-            None
-        );
-        assert_eq!(
-            tree.update_value("dev/node", "missing", &RpcValue::from(1)),
-            None
-        );
+        assert!(tree.update_value("dev/other", "getA", &RpcValue::from(1)).is_err());
+        assert!(tree.update_value("dev/node", "missing", &RpcValue::from(1)).is_err());
     }
 
     #[test]
@@ -243,14 +242,30 @@ mod tests {
         ]);
 
         let mut dyn_map = std::collections::BTreeMap::new();
-        dyn_map.insert("dynSig".into(), Default::default());
+        dyn_map.insert("dynSig".into(), None);
         let dynamic_signals = SignalsDefinition::Dynamic(dyn_map);
 
         let tree = tree_with_methods(
             "dev/node",
             vec![
-                getter_method("m1", static_signals),
-                getter_method("m2", dynamic_signals),
+            MetaMethod::new(
+                "m1",
+                Flags::None,
+                shvrpc::metamethod::AccessLevel::Read,
+                "",
+                "",
+                static_signals,
+                ""
+            ),
+            MetaMethod::new(
+                "m2",
+                Flags::None,
+                shvrpc::metamethod::AccessLevel::Read,
+                "",
+                "",
+                dynamic_signals,
+                ""
+            ),
             ],
         );
 
@@ -263,12 +278,8 @@ mod tests {
 
     #[test]
     fn snapshot_keys_only_methods_with_sig_chng() {
-        let with_chng = getter_method(
-            "m1",
-            SignalsDefinition::Static(&[(SIG_CHNG, None)]),
-        );
-        let without_chng =
-            getter_method("m2", SignalsDefinition::Static(&[]));
+        let with_chng = cached_method("m1");
+        let without_chng = non_cached_method("m2");
 
         let tree = tree_with_methods("dev/node", vec![with_chng, without_chng]);
 

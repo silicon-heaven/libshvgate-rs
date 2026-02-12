@@ -31,7 +31,7 @@ smol = ["dep:smol", "shvclient/smol"]
 
 [dev-dependencies]
 tokio = { version = "1.49.0" }
-shvclient = { version = "0.28.0", features = ["tokio"] }
+shvclient = { version = "2.0", features = ["tokio"] }
 simple_logger = { version = "5.1.0", features = ["stderr"] }
 rand = "0.9.2"
 
