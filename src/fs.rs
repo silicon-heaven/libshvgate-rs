@@ -20,10 +20,10 @@ const METH_LS_FILES: &str = "lsfiles";
 
 const META_METHOD_LS_FILES: MetaMethod = MetaMethod::new_static(METH_LS_FILES, shvrpc::metamethod::Flags::None, AccessLevel::Read, "Map|Null", "List", &[], "");
 
-fn rpc_error_filesystem(err: std::io::Error) -> RpcError {
+fn rpc_error_filesystem(err: impl Into<std::io::Error>) -> RpcError {
     RpcError::new(
         RpcErrorCode::MethodCallException,
-        format!("Filesystem error: {err}")
+        format!("Filesystem error: {err}", err = err.into())
     )
 }
 
@@ -94,23 +94,13 @@ impl TryFrom<&RpcValue> for ReadParams {
             return Ok(Self::default());
         }
 
-        let parse_value = |val: &RpcValue| {
-            i64::try_from(val)
-                .map_err(|e| e.to_string())
-                .and_then(|v| u64::try_from(v)
-                    .map_err(|e| e.to_string())
-                )
-                .map(Some)
-        };
-
         let (offset, size) = match &value.value {
             rpcvalue::Value::Map(map) => {
                 let parse_param = |param_name: &str| -> Result<Option<u64>, String> {
-                    match map.get(param_name) {
-                        None => Ok(None),
-                        Some(val) => parse_value(val)
-                            .map_err(|e| format!("Error parsing `{param_name}` parameter: {e}")),
-                    }
+                    map.get(param_name).map_or(
+                        Ok(None),
+                        |val| u64::try_from(val).map(Some).map_err(|e| format!("Error parsing `{param_name}` parameter: {e}")),
+                    )
                 };
 
                 let offset = parse_param("offset")?;
@@ -121,9 +111,9 @@ impl TryFrom<&RpcValue> for ReadParams {
             rpcvalue::Value::List(list) => {
                 match list.as_slice() {
                     [offset, size] => {
-                        let offset = parse_value(offset).map_err(|e| format!("Error parsing `offset` parameter: {e}"))?;
-                        let size = parse_value(size).map_err(|e| format!("Error parsing `size` parameter: {e}"))?;
-                        (offset, size)
+                        let offset = u64::try_from(offset).map_err(|e| format!("Error parsing `offset` parameter: {e}"))?;
+                        let size = u64::try_from(size).map_err(|e| format!("Error parsing `size` parameter: {e}"))?;
+                        (Some(offset), Some(size))
                     }
                     _ => return Err("Wrong format ReadParam list, expected [offset, size]".to_string())
                 }
@@ -208,7 +198,7 @@ pub async fn fs_request_handler(
                             .ok()?;
                         let name = entry.file_name().to_str().map(String::from)?;
                         let ftype = if meta.is_dir() { FileType::Directory } else if meta.is_file() { FileType::File } else { return None };
-                        let size = meta.len() as i64;
+                        let size = meta.len().cast_signed();
                         Some(LsFilesEntry { name, ftype, size })
                     }.await;
                     Ok(res)
@@ -240,7 +230,7 @@ pub async fn fs_request_handler(
                 }
                 Ok(hex::encode(hasher.finalize()).into())
             }
-            METH_SIZE => Ok((file_size as i64).into()),
+            METH_SIZE => Ok((file_size.cast_signed()).into()),
             METH_READ => {
                 let read_params: ReadParams = param
                     .try_into()
@@ -251,8 +241,11 @@ pub async fn fs_request_handler(
                     .map_err(rpc_error_filesystem)?;
                 let mut result_meta = MetaMap::new();
                 result_meta
-                    .insert("offset", (offset as i64).into())
-                    .insert("size", (res.len() as i64).into());
+                    .insert("offset", (offset.cast_signed()).into())
+                    .insert("size", i64::try_from(res.len()).map_or_else(
+                            |err| format!("Cannot determine the size: {err}").into(),
+                            RpcValue::from
+                    ));
                 Ok(RpcValue::new(res.into(), Some(result_meta)))
             }
             METH_READ_COMPRESSED => {
@@ -265,8 +258,8 @@ pub async fn fs_request_handler(
                     .map_err(rpc_error_filesystem)?;
                 let mut result_meta = MetaMap::new();
                 result_meta
-                    .insert("offset", (offset as i64).into())
-                    .insert("size", (bytes_read as i64).into());
+                    .insert("offset", (offset.cast_signed()).into())
+                    .insert("size", (bytes_read.cast_signed()).into());
                 Ok(RpcValue::new(res.into(), Some(result_meta)))
             }
             _ => Err(rpc_error_method_not_found()),
@@ -283,11 +276,11 @@ pub async fn fs_request_handler(
     let base_path = base_path
         .canonicalize()
         .inspect_err(|err| log::error!("Cannot resolve base path `{base_path}`: {err}", base_path = base_path.display()))
-        .map_err(|_| UnresolvedRequest)?;
+        .map_err(|_err| UnresolvedRequest)?;
     let path = base_path
         .join(sub_path)
         .canonicalize()
-        .map_err(|_| UnresolvedRequest)?;
+        .map_err(|_err| UnresolvedRequest)?;
 
     // Detect symlink traversal
     if !path.starts_with(base_path) {
@@ -311,7 +304,7 @@ pub async fn fs_request_handler(
             Method::Other(m) if m.method() == METH_LS_FILES => m.resolve(METHODS, async || {
                 lsfiles_handler(get_dir_entries(path).await?).await
             }),
-            _ => err_unresolved_request(),
+            Method::Other(_) => err_unresolved_request(),
         }
     } else if path_meta.is_file() {
         const METHODS: &[MetaMethod] = &[

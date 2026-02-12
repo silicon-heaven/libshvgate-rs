@@ -68,7 +68,7 @@ pub(crate) fn rpc_command_to_journal_entry(rq: &RpcMessage) -> JournalEntry {
         .tag(shvrpc::rpcmessage::Tag::UserId as i32)
         .map(RpcValue::to_cpon);
     let now = DateTime::now();
-    let method = rq.method().to_owned().unwrap_or_default();
+    let method = rq.method().unwrap_or_default();
     let value = format!("{method}({param})",
         param = rq.param().cloned().unwrap_or_else(RpcValue::null).to_cpon()
     );
@@ -88,7 +88,7 @@ pub(crate) fn rpc_command_to_journal_entry(rq: &RpcMessage) -> JournalEntry {
 
 impl GateContext {
     pub(crate) async fn new(journal_config: JournalConfig, tree: ShvTree) -> shvrpc::Result<Self> {
-        let log_writer = create_log3_writer(&journal_config.root_path, &DateTime::now()).await?;
+        let log_writer = create_log3_writer(&journal_config.root_path, DateTime::now()).await?;
         let snapshot_keys = tree.snapshot_keys().cloned().collect();
         Ok(Self {
             start_time: std::time::Instant::now(),
@@ -186,7 +186,7 @@ impl GateContext {
         // At this point, journal_data.entries_count >= self.journal_config.max_file_entries holds and
         // journal_data.snapshot_keys is empty. If create_log_writer fails here and then journal_append
         // is called again, it will just proceed here again without any other effects.
-        journal_data.log_writer = create_log3_writer(&self.journal_config.root_path, &DateTime::now()).await?;
+        journal_data.log_writer = create_log3_writer(&self.journal_config.root_path, DateTime::now()).await?;
         journal_data.snapshot_keys = self.tree.snapshot_keys().cloned().collect();
         journal_data.entries_count = 0;
 
@@ -236,17 +236,18 @@ async fn trim_dir(
     }
     files.sort_by(|(path_a,_), (path_b,_)| path_a.cmp(path_b));
     // Keep at least 2 most recent files for log snapshots
-    let removable_files = &files[..files.len().saturating_sub(2)];
-    for (file_path, file_size) in removable_files {
-        if overall_size <= size_limit {
-            break
+    if let [removable_files @ .., _, _] = files.as_slice() {
+        for (file_path, file_size) in removable_files {
+            if overall_size <= size_limit {
+                break
+            }
+            if let Err(err) = fs::remove_file(file_path).await {
+                log::error!("Cannot delete {file_path}: {err}", file_path = file_path.to_string_lossy());
+                continue;
+            }
+            overall_size -= file_size;
+            log::info!("Deleted: {path} ({file_size} bytes)", path = file_path.to_string_lossy());
         }
-        if let Err(err) = fs::remove_file(file_path).await {
-            log::error!("Cannot delete {file_path}: {err}", file_path = file_path.to_string_lossy());
-            continue;
-        }
-        overall_size -= file_size;
-        log::info!("Deleted: {path} ({file_size} bytes)", path = file_path.to_string_lossy());
     }
     Ok(())
 }
@@ -288,14 +289,14 @@ async fn create_journal_file(base_path: impl AsRef<Path>, file_name: impl AsRef<
         ))
 }
 
-fn datetime_to_log3_filename(dt: &DateTime) -> String {
+fn datetime_to_log3_filename(dt: DateTime) -> String {
     dt
         .to_chrono_datetime()
         .format("%Y-%m-%dT%H-%M-%S.log3")
         .to_string()
 }
 
-async fn create_log3_writer(base_path: impl AsRef<Path>, date_time: &DateTime) -> Result<FileJournalWriterLog3, std::io::Error> {
+async fn create_log3_writer(base_path: impl AsRef<Path>, date_time: DateTime) -> Result<FileJournalWriterLog3, std::io::Error> {
     let file = create_journal_file(base_path, datetime_to_log3_filename(date_time)).await?;
     JournalWriterLog3::new(BufWriter::new(file.compat_write())).await
 }

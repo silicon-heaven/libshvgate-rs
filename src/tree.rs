@@ -16,12 +16,11 @@ pub(crate) struct CachedValue(pub(crate) Option<RpcValue>);
 impl CachedValue {
     fn update(&mut self, new_value: &RpcValue) -> bool {
         match &mut self.0 {
-            Some(value) => if new_value != value {
+            Some(value) if new_value != value => {
                 *value = new_value.clone();
                 true
-            } else {
-                false
-            },
+            }
+            Some(_) => false,
             None => {
                 self.0 = Some(new_value.clone());
                 true
@@ -107,7 +106,7 @@ impl ShvTree {
         let method = method.as_ref();
         let locked_value = self.cache.get(&PathMethod(String::from(path), String::from(method)))
             .ok_or_else(|| format!("Cache for method `{path}:{method}` does not exist"))?;
-        let mut value = locked_value.write().unwrap();
+        let mut value = locked_value.write().expect("Value cache mutex should not be poisoned");
         Ok(value.update(new_value))
     }
 

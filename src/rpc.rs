@@ -69,7 +69,7 @@ pub(crate) async fn rpc_handler(
             match method {
                 Method::Dir(dir) => dir.resolve(&[]),
                 Method::Ls(ls) => ls.resolve(&[], async move || Ok(vec![".files".into()])),
-                _ => err_unresolved_request(),
+                Method::Other(_) => err_unresolved_request(),
             }
         }
         NodeType::DotHistoryFiles(sub_path) => {
@@ -80,10 +80,9 @@ pub(crate) async fn rpc_handler(
             let Some(children) = children_on_path(nodes_description, &path) else {
                 return err_unresolved_request()
             };
-            let methods = match nodes_description.get(&path) {
-                Some(descr) => descr.methods.clone(),
-                None => Default::default(),
-            };
+            let methods = nodes_description
+                .get(&path)
+                .map_or_else(Vec::default, |descr| descr.methods.clone());
             match method {
                 Method::Dir(dir) => dir.resolve(methods),
                 Method::Ls(ls) => ls.resolve(methods, async move || Ok(children)),

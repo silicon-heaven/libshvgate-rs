@@ -52,20 +52,20 @@ pub struct ShvGateConfig {
 }
 
 impl ShvGate {
-    pub async fn new(config: ShvGateConfig) -> Self {
-        Self {
+    pub async fn new(config: ShvGateConfig) -> shvrpc::Result<Self> {
+        Ok(Self {
             context: Arc::new(
                          GateContext::new(
                              config.journal,
                              ShvTree::from_definition(config.tree)
                          )
-                         .await
-                         .unwrap()
+                         .await?
                      ),
             app_rpc_handler: None,
-        }
+        })
     }
 
+    #[must_use]
     pub fn with_method_call_handler<F, Fut, Ret>(mut self, handler: F) -> Self
         where
             F: Fn(String, String, Option<RpcValue>, ClientCommandSender, Arc<GateContext>) -> Fut + Sync + Send + 'static,

@@ -58,7 +58,7 @@ impl From<MethodFlag> for shvrpc::metamethod::Flags {
 
 impl From<Method> for shvrpc::metamethod::MetaMethod {
     fn from(value: Method) -> Self {
-        let flags = shvrpc::metamethod::Flags::from_iter(value.flags.into_iter().map(Into::into));
+        let flags = FromIterator::from_iter(value.flags.into_iter().map(Into::into));
         let access = value.access
             .and_then(|access_str| shvrpc::metamethod::AccessLevel::from_str(&access_str))
             .unwrap_or_default();
