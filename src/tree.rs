@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 use std::sync::RwLock;
 
-use shvclient::clientnode::{MetaMethod, SIG_CHNG};
+use shvclient::clientnode::{METH_GET, MetaMethod, SIG_CHNG};
 use shvclient::shvproto::RpcValue;
-use shvrpc::metamethod::SignalsDefinition;
-use shvrpc::typeinfo::TypeInfo;
+use shvrpc::metamethod::{Flags, SignalsDefinition};
+use shvrpc::typeinfo::{FieldDescriptionMethods, TypeInfo};
 
 mod yaml;
 
@@ -133,10 +133,79 @@ impl ShvTreeDefinition {
         Ok(Self { nodes_description })
     }
 
-    // pub fn from_typeinfo(input: &str) -> Self {
-    //     // TODO
-    //     Self { nodes_description: Default::default() }
-    // }
+    pub fn from_typeinfo(type_info: &TypeInfo) -> Self {
+        let device_nodes: BTreeMap<String, BTreeMap<String, Vec<MetaMethod>>> = type_info
+            .device_descriptions()
+            .iter()
+            .map(|(device_type, device_descr)| {
+                let prop_methods: BTreeMap<String, Vec<MetaMethod>> = device_descr
+                    .properties()
+                    .iter()
+                    .map(|prop| {
+                        let methods = from_methods_description(prop.methods());
+                        (prop.name().into(), methods)
+                    })
+                .collect();
+                (device_type.clone(), prop_methods)
+            })
+        .collect();
+
+        fn from_methods_description(methods: impl Into<Vec<shvrpc::typeinfo::MethodDescription>>) -> Vec<MetaMethod> {
+            let methods = methods.into();
+            let has_chng = methods.iter().any(|m| m.name == SIG_CHNG);
+            methods.into_iter()
+                .filter_map(|m| {
+                    let flags = Flags::from_bits_retain(m.flags);
+                    if flags.contains(Flags::IsSignal) {
+                        return None
+                    }
+                    let mut signals: BTreeMap<_,_> = m.signals.into_iter().collect();
+                    if m.name == METH_GET && has_chng {
+                        signals.entry(SIG_CHNG.into()).or_insert(None);
+                    }
+                    Some(MetaMethod::new(
+                        m.name,
+                        flags,
+                        m.access,
+                        m.param,
+                        m.result,
+                        SignalsDefinition::Dynamic(signals),
+                        m.description,
+                ))
+                })
+                .collect()
+        }
+
+        let mut nodes_description: BTreeMap<String, NodeDescription> = type_info
+            .device_paths()
+            .iter()
+            .filter_map(|(device_path, device_type)| {
+                if device_path.is_empty() {
+                    // Do not allow to override the root node as it is special
+                    return None
+                }
+                Some(device_nodes
+                    .get(device_type)?
+                    .iter()
+                    .map(|(prop_name, methods)| {
+                        let node_path = shvrpc::join_path!(device_path, prop_name);
+                        (node_path, NodeDescription { methods: methods.to_owned() })
+                    })
+                )}
+            )
+            .flatten()
+            .collect();
+
+        for (path, prop) in type_info.property_deviations() {
+            if path.is_empty() {
+                continue
+            }
+            let methods = from_methods_description(prop.methods());
+            nodes_description.insert(path.into(), NodeDescription { methods });
+        }
+
+        Self { nodes_description }
+    }
 }
 
 #[derive(Debug, Clone)]
