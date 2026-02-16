@@ -1,0 +1,50 @@
+version: "1"
+
+tree:
+  voltage/V1: Voltage
+  voltage/V1/value: VoltageValue
+  log: Log
+
+methods:
+  - &method_get
+    name: get
+    result: RpcValue
+    flags: [IsGetter]
+    signals: { chng: null }
+    access: rd
+
+  - &method_device_type
+    name: deviceType
+    result: String
+    flags: [IsGetter]
+
+  - &method_type_name
+    name: typeName
+    result: String
+    flags: [IsGetter]
+
+  - &method_cmd
+    access: cmd
+    flags: [UserIDRequired]
+
+
+nodes:
+  Voltage:
+    - *method_device_type
+
+    - <<: *method_cmd
+      name: cmdOn
+
+    - <<: *method_cmd
+    - name: cmdOff
+
+  VoltageValue:
+    - <<: *method_get
+      result: UInt
+
+    - *method_type_name
+
+  Log:
+    - name: read
+      access: rd
+      result: String
