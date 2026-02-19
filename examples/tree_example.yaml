@@ -3,6 +3,9 @@ version: "1"
 tree:
   voltage/V1: Voltage
   voltage/V1/value: VoltageValue
+  voltage:
+    V2: Voltage
+    V2/value: VoltageValue
   log: Log
 
 methods:
