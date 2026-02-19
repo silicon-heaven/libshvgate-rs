@@ -10,10 +10,57 @@ pub enum TreeDocument {
 mod v1 {
     use std::collections::BTreeMap;
 
-    use serde::Deserialize;
+    use serde::{Deserialize, Deserializer};
+
+    fn deserialize_tree<'de, D>(
+        deserializer: D,
+    ) -> Result<BTreeMap<String, String>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_yaml_ng::Value::deserialize(deserializer)?;
+        let mut result = BTreeMap::new();
+
+        fn flatten(
+            value: &serde_yaml_ng::Value,
+            prefix: Option<String>,
+            out: &mut BTreeMap<String, String>,
+        ) -> Result<(), String> {
+            match value {
+                serde_yaml_ng::Value::Mapping(map) => {
+                    for (k, v) in map {
+                        let key = k
+                            .as_str()
+                            .ok_or_else(|| format!("Non-string key `{k:?}` in tree"))?;
+
+                        let full_key = prefix
+                            .as_ref()
+                            .map_or_else(|| key.to_string(), |p| shvrpc::join_path!(p, key));
+
+                        flatten(v, Some(full_key), out)?;
+                    }
+                }
+
+                serde_yaml_ng::Value::String(s) => {
+                    let key = prefix.ok_or_else(|| format!("Leaf string without key context: `{s}`"))?;
+                    out.insert(key, s.clone());
+                }
+
+                _ => return Err(format!("Tree values must be either mappings or strings. Cannot process value: `{value:?}`"))
+            }
+
+            Ok(())
+        }
+
+        flatten(&value, None, &mut result)
+            .map_err(serde::de::Error::custom)?;
+
+        Ok(result)
+    }
 
     #[derive(Debug, Deserialize)]
     pub struct TreeDefinition {
+        #[serde(deserialize_with = "deserialize_tree")]
         pub tree: BTreeMap<String, String>,
         pub nodes: BTreeMap<String, Vec<MethodDefinition>>,
     }
@@ -78,6 +125,168 @@ mod v1 {
                 shvrpc::metamethod::SignalsDefinition::Dynamic(value.signals),
                 value.description.unwrap_or_default()
             )
+        }
+    }
+
+#[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::collections::BTreeMap;
+
+        fn expected_tree() -> BTreeMap<String, String> {
+            BTreeMap::from([
+                (
+                    "voltage/V1".to_string(),
+                    "Voltage".to_string(),
+                ),
+                (
+                    "voltage/V1/value".to_string(),
+                    "VoltageValue".to_string(),
+                ),
+                (
+                    "voltage/V1/settings".to_string(),
+                    "VoltageSettings".to_string(),
+                ),
+            ])
+        }
+
+        #[test]
+        fn flat_yaml_is_parsed_correctly() {
+            let yaml = r#"
+tree:
+  voltage/V1: Voltage
+  voltage/V1/value: VoltageValue
+  voltage/V1/settings: VoltageSettings
+
+nodes: {}
+"#;
+
+            let parsed: TreeDefinition = serde_yaml_ng::from_str(yaml).unwrap();
+            assert_eq!(parsed.tree, expected_tree());
+        }
+
+        #[test]
+        fn one_level_nested_yaml_is_equivalent() {
+            let yaml = r#"
+tree:
+  voltage:
+    V1: Voltage
+    V1/value: VoltageValue
+    V1/settings: VoltageSettings
+
+nodes: {}
+"#;
+
+            let parsed: TreeDefinition = serde_yaml_ng::from_str(yaml).unwrap();
+            assert_eq!(parsed.tree, expected_tree());
+        }
+
+        #[test]
+        fn mixed_flat_and_nested_yaml_is_equivalent() {
+            let yaml = r#"
+tree:
+  voltage:
+    V1: Voltage
+  voltage/V1/value: VoltageValue
+  voltage/V1/settings: VoltageSettings
+
+nodes: {}
+"#;
+
+            let parsed: TreeDefinition = serde_yaml_ng::from_str(yaml).unwrap();
+            assert_eq!(parsed.tree, expected_tree());
+        }
+
+        #[test]
+        fn fails_on_non_string_key() {
+            let yaml = r#"
+tree:
+  123:
+    V1: Voltage
+nodes: {}
+"#;
+
+            let result: Result<TreeDefinition, _> = serde_yaml_ng::from_str(yaml);
+
+            assert!(result.is_err());
+
+            let err = result.unwrap_err().to_string();
+            assert!(
+                err.contains("Non-string key"),
+                "Unexpected error: {err}"
+            );
+        }
+
+        #[test]
+        fn fails_on_invalid_leaf_value_number() {
+            let yaml = r#"
+tree:
+  voltage:
+    V1: 42
+nodes: {}
+"#;
+
+            let result: Result<TreeDefinition, _> = serde_yaml_ng::from_str(yaml);
+
+            assert!(result.is_err());
+
+            let err = result.unwrap_err().to_string();
+            assert!(
+                err.contains("Tree values must be either mappings or strings"),
+                "Unexpected error: {err}"
+            );
+        }
+
+        #[test]
+        fn fails_on_invalid_leaf_value_bool() {
+            let yaml = r#"
+tree:
+  voltage:
+    V1: true
+nodes: {}
+"#;
+
+            let result: Result<TreeDefinition, _> = serde_yaml_ng::from_str(yaml);
+
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn fails_when_nested_value_is_sequence() {
+            let yaml = r#"
+tree:
+  voltage:
+    - V1
+    - V2
+nodes: {}
+"#;
+
+            let result: Result<TreeDefinition, _> = serde_yaml_ng::from_str(yaml);
+
+            assert!(result.is_err());
+
+            let err = result.unwrap_err().to_string();
+            assert!(
+                err.contains("Tree values must be either mappings or strings"),
+                "Unexpected error: {err}"
+            );
+        }
+
+        #[test]
+        fn fails_on_tree_root_string_leaf() {
+            let yaml = r#"
+tree: Voltage
+nodes: {}
+"#;
+
+            let result: Result<TreeDefinition, _> = serde_yaml_ng::from_str(yaml);
+            assert!(result.is_err());
+
+            let err = result.unwrap_err().to_string();
+            assert!(
+                err.contains("Leaf string without key context"),
+                "Unexpected error: {err}"
+            );
         }
     }
 }
