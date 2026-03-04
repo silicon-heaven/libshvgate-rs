@@ -13,6 +13,8 @@ use self::tree::ShvTree;
 use shvclient::shvrpc::RpcMessage;
 pub(crate) use shvclient::shvrpc::Result as ShvRpcResult;
 
+pub use shvclient;
+
 pub use self::tree::ShvTreeDefinition;
 pub use self::data::JournalConfig;
 
