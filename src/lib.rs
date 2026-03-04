@@ -6,7 +6,6 @@ use shvclient::shvrpc::client::ClientConfig;
 use shvclient::{ClientCommandSender, ClientEventsReceiver};
 use shvrpc::RpcMessageMetaTags;
 
-use self::data::GateContext;
 use self::rpc::{RpcHandler, rpc_handler};
 use self::tree::ShvTree;
 
@@ -17,6 +16,7 @@ pub use shvclient;
 
 pub use self::tree::ShvTreeDefinition;
 pub use self::data::JournalConfig;
+pub use self::data::GateContext;
 
 mod data;
 mod tree;
