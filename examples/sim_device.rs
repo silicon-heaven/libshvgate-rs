@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex, Once};
 
 use futures::FutureExt;
 use futures::StreamExt as _;
-use libshvgate_rs::{JournalConfig, ShvGate, ShvGateConfig, ShvTreeDefinition};
+use libshvgate::{JournalConfig, ShvGate, ShvGateConfig, ShvTreeDefinition};
 use log::LevelFilter;
 use shvclient::clientnode::METH_GET;
 use shvclient::shvproto::RpcValue;
