@@ -256,6 +256,7 @@ impl ShvTree {
             .and_then(|cached_value| cached_value.0.clone())
     }
 
+    #[cfg(test)]
     pub(crate) fn method_has_signal(&self, path: impl AsRef<str>, method: impl AsRef<str>, signal: impl AsRef<str>) -> bool {
         let signal = signal.as_ref();
         let method = method.as_ref();
@@ -273,7 +274,6 @@ impl ShvTree {
         self
             .cache
             .keys()
-            .filter(|PathMethod(path, method)| self.method_has_signal(path, method, SIG_CHNG))
     }
 }
 
