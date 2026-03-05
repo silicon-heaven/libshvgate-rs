@@ -66,13 +66,23 @@ nodes:
 
     let tree = ShvTreeDefinition::from_yaml(TREE_YAML).expect("Tree definition must be correct");
 
+    let broker_url =
+        std::env::var("BROKER_URL")
+        .expect("BROKER_URL env variable must be set");
+
+    let client_config = shvclient::shvrpc::client::ClientConfig {
+        url: url::Url::parse(&broker_url).expect("valid broker URL"),
+        ..Default::default()
+    };
+
     ShvGateConfig {
         tree,
         journal: JournalConfig {
             root_path: "journal3_example".into(),
             max_file_entries: 100,
             max_journal_size: 100_000,
-        }
+        },
+        client_config,
     }
 }
 
@@ -87,15 +97,6 @@ async fn main() {
         drift: 0.3,
         period_ms: 2000,
     }));
-
-    let broker_url =
-        std::env::var("BROKER_URL")
-        .expect("BROKER_URL env variable must be set");
-
-    let client_config = shvclient::shvrpc::client::ClientConfig {
-        url: url::Url::parse(&broker_url).expect("valid broker URL"),
-        ..Default::default()
-    };
 
     let sim_cfg_clone = sim_cfg.clone();
     ShvGate::new(gate_config())
@@ -140,7 +141,7 @@ async fn main() {
                 ))
             }
         })
-        .run(&client_config, move |ccs, mut cer, gate_context| {
+        .run(move |ccs, mut cer, gate_context| {
             shvclient::runtime::spawn_task(async move {
                 // Wait until connected
                 while let Some(event) = cer.next().await {
@@ -173,7 +174,7 @@ async fn main() {
                     gate_context.update_value(
                         "device/temperature",
                         METH_GET,
-                        temp.into(),
+                        temp,
                         false,
                         false,
                         &ccs,
@@ -182,7 +183,7 @@ async fn main() {
                     gate_context.update_value(
                         "device/status",
                         METH_GET,
-                        status.into(),
+                        status,
                         false,
                         false,
                         &ccs,
