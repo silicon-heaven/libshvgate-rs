@@ -140,6 +140,21 @@ impl GateContext {
         Ok(updated)
     }
 
+    pub fn clear_cache(&self, filter_path_method: impl Fn(&str, &str) -> bool) {
+        for ((path, method), cached_value) in self.tree.cache
+            .iter()
+            .filter_map(|(PathMethod(path, method), value)|
+                filter_path_method(path, method)
+                .then_some(((path, method), value))
+            )
+            {
+                let CachedValue(value) = &mut *cached_value
+                    .write()
+                    .unwrap_or_else(|_| panic!("Poisoned RwLock of tree node {path}:{method}"));
+                *value = None;
+            }
+    }
+
     async fn journal_append(&self, entry: &JournalEntry) -> std::io::Result<()> {
         let journal_data = &mut *self.journal_data.write().await;
         let append_entry = async |journal_data: &mut JournalData| {
