@@ -118,7 +118,7 @@ impl GateContext {
         &self,
         path: impl AsRef<str>,
         method: impl AsRef<str>,
-        new_value: RpcValue,
+        new_value: impl Into<RpcValue>,
         force_chng: bool,
         repeat: bool,
         client_cmd_tx: &ClientCommandSender
@@ -126,6 +126,7 @@ impl GateContext {
     {
         let path = path.as_ref();
         let method = method.as_ref();
+        let new_value = new_value.into();
         let updated = self.tree
             .update_value(path, method, &new_value)
             .map_err(|err| format!("Cannot update value: {err}"))?;

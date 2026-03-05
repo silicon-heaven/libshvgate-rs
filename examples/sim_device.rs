@@ -174,7 +174,7 @@ async fn main() {
                     gate_context.update_value(
                         "device/temperature",
                         METH_GET,
-                        temp.into(),
+                        temp,
                         false,
                         false,
                         &ccs,
@@ -183,7 +183,7 @@ async fn main() {
                     gate_context.update_value(
                         "device/status",
                         METH_GET,
-                        status.into(),
+                        status,
                         false,
                         false,
                         &ccs,
