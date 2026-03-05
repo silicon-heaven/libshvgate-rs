@@ -45,12 +45,14 @@ pub(crate) fn send_rpc_signal(
 pub struct ShvGate {
     context: Arc<GateContext>,
     app_rpc_handler: Option<RpcHandler>,
+    client_config: ClientConfig,
 }
 
 
 pub struct ShvGateConfig {
     pub tree: ShvTreeDefinition,
     pub journal: JournalConfig,
+    pub client_config: ClientConfig,
 }
 
 impl ShvGate {
@@ -64,6 +66,7 @@ impl ShvGate {
                          .await?
                      ),
             app_rpc_handler: None,
+            client_config: config.client_config,
         })
     }
 
@@ -83,10 +86,11 @@ impl ShvGate {
         self
     }
 
-    pub async fn run<H>(self, client_config: &ClientConfig, on_client_start: H) -> ShvRpcResult<()>
+    pub async fn run<H>(self, on_client_start: H) -> ShvRpcResult<()>
     where
         H: FnOnce(ClientCommandSender, ClientEventsReceiver, Arc<GateContext>)
     {
+        let client_config = self.client_config;
         let rpc_handler = {
             let gate_ctx = self.context.clone();
             let app_rpc_handler = self.app_rpc_handler.clone();
@@ -95,7 +99,7 @@ impl ShvGate {
         };
         shvclient::Client::new()
             .mount_dynamic("", rpc_handler)
-            .run_with_init(client_config, {
+            .run_with_init(&client_config, {
                 let gate_ctx = self.context.clone();
                 |client_cmd_tx, client_evt_rx|
                     on_client_start(client_cmd_tx, client_evt_rx, gate_ctx)
