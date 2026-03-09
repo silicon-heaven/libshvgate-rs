@@ -120,8 +120,8 @@ impl ShvTreeDefinition {
                     let methods = tree_definition
                         .nodes
                         .get(&node_type_name)
-                        .into_iter()
-                        .flatten()
+                        .ok_or_else(|| format!("Unknown node type `{node_type_name}`"))?
+                        .iter()
                         .map(|m| MetaMethod::from(m.clone()))
                         .collect();
 
@@ -422,5 +422,54 @@ mod tests {
         let PathMethod(path, method) = keys[0];
         assert_eq!(path, "dev/node");
         assert_eq!(method, "m1");
+    }
+
+    #[test]
+    fn yaml_parse_succeeds() {
+        let yaml = r#"
+version: "1"
+
+tree:
+  voltage/V1: Voltage
+  voltage/V1/value: VoltageValue
+
+nodes:
+  Voltage:
+    - name: type
+  VoltageValue:
+    - name: get
+"#;
+
+        let tree_def = ShvTreeDefinition::from_yaml(yaml).unwrap();
+        assert!(tree_def
+            .nodes_description
+            .get("voltage/V1")
+            .is_some_and(|n| n.methods.first().is_some_and(|v| v.name == "type"))
+        );
+        assert!(tree_def
+            .nodes_description
+            .get("voltage/V1/value")
+            .is_some_and(|n| n.methods.first().is_some_and(|v| v.name == "get"))
+        );
+    }
+
+    #[test]
+    fn yaml_missing_node_parse_fails() {
+        let yaml = r#"
+version: "1"
+
+tree:
+  voltage/V1: Voltage
+  voltage/V1/value: VoltageValue
+
+nodes:
+  Voltage:
+    - name: get
+"#;
+
+        assert!(
+            ShvTreeDefinition::from_yaml(yaml)
+            .is_err_and(|e| e.starts_with("Unknown node type `VoltageValue`"))
+        );
     }
 }
