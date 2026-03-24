@@ -1,0 +1,35 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/*
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    groups:
+      github-actions-deps:
+        patterns:
+          - '*'
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    groups:
+      cargo-shv-major:
+        patterns:
+          - shvrpc
+          - shvclient
+        update-types:
+          - major
+      cargo-minor-patch:
+        patterns:
+          - '*'
+        exclude-patterns:
+          - shvrpc
+          - shvclient
+        update-types:
+          - major

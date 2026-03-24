@@ -1,0 +1,34 @@
+name: Rust
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-Dwarnings"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        feature: ["tokio"]
+        toolchain: [stable, nightly]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: clippy
+          toolchain: ${{ matrix.toolchain }}
+          override: true
+      - name: Clippy (${{ matrix.feature }})
+        run: cargo clippy --all-targets --features ${{ matrix.feature }}
+      - name: Build (${{ matrix.feature }})
+        run: cargo build --all-targets --features ${{ matrix.feature }}
+      - name: Run tests (${{ matrix.feature }})
+        run: cargo test --all-targets --features ${{ matrix.feature }}

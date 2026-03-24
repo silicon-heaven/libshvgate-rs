@@ -86,6 +86,27 @@ impl ShvGate {
         self
     }
 
+    #[cfg(feature = "mocking")]
+    pub async fn mock_run<H>(self, on_client_start: H,  channel: futures::channel::mpsc::UnboundedReceiver::<shvclient::ConnectionEvent>) -> ShvRpcResult<()>
+    where
+        H: FnOnce(ClientCommandSender, ClientEventsReceiver, Arc<GateContext>)
+    {
+        let rpc_handler = {
+            let gate_ctx = self.context.clone();
+            let app_rpc_handler = self.app_rpc_handler.clone();
+            move |rq, cmd_sender|
+                rpc_handler(rq, cmd_sender, gate_ctx.clone(), app_rpc_handler.clone())
+        };
+        shvclient::Client::new()
+            .mount_dynamic("", rpc_handler)
+            .mock_run_with_init({
+                let gate_ctx = self.context.clone();
+                |client_cmd_tx, client_evt_rx|
+                    on_client_start(client_cmd_tx, client_evt_rx, gate_ctx)
+            }, channel)
+            .await
+    }
+
     pub async fn run<H>(self, on_client_start: H) -> ShvRpcResult<()>
     where
         H: FnOnce(ClientCommandSender, ClientEventsReceiver, Arc<GateContext>)

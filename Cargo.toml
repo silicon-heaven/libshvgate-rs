@@ -25,6 +25,7 @@ url = "2.5.8"
 
 [features]
 default = ["tokio"]
+mocking = ["shvclient/mocking", "shvclient/tokio"]
 
 tokio = ["dep:tokio", "dep:tokio-util", "shvclient/tokio"]
 smol = ["dep:smol", "shvclient/smol"]
