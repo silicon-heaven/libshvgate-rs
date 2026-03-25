@@ -1,13 +1,13 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use futures::{AsyncWrite, AsyncWriteExt as _};
 use futures::io::BufWriter;
 use shvclient::ClientCommandSender;
 use shvclient::clientnode::SIG_CHNG;
-use shvclient::shvproto::{DateTime, IMap, RpcValue, make_imap, make_map};
+use shvclient::shvproto::{DateTime, RpcValue};
 use shvrpc::datachange::ValueFlags;
 use shvrpc::journalentry::JournalEntry;
+use shvrpc::journalrw::{JournalWriterLog3, datetime_to_log3_filename};
 use shvrpc::metamethod::AccessLevel;
 use shvrpc::{RpcMessage, RpcMessageMetaTags as _};
 use tokio::fs::File;
@@ -66,7 +66,7 @@ const CMDLOG: &str = "cmdlog";
 pub(crate) fn rpc_command_to_journal_entry(rq: &RpcMessage) -> JournalEntry {
     let user_id = rq
         .tag(shvrpc::rpcmessage::Tag::UserId as i32)
-        .map(RpcValue::to_cpon);
+        .map_or_else(RpcValue::null, RpcValue::clone);
     let now = DateTime::now();
     let method = rq.method().unwrap_or_default();
     let value = format!("{method}({param})",
@@ -186,7 +186,7 @@ impl GateContext {
                     value,
                     access_level: AccessLevel::Read as _,
                     short_time: -1,
-                    user_id: None,
+                    user_id: ().into(),
                     repeat: true,
                     provisional: false,
                 };
@@ -285,7 +285,7 @@ fn value_to_journal_entry(
         value: value.into(),
         access_level: AccessLevel::Read as _,
         short_time: -1,
-        user_id: None,
+        user_id: ().into(),
         repeat,
         provisional: false
     }
@@ -305,71 +305,7 @@ async fn create_journal_file(base_path: impl AsRef<Path>, file_name: impl AsRef<
         ))
 }
 
-fn datetime_to_log3_filename(dt: DateTime) -> String {
-    dt
-        .to_chrono_datetime()
-        .format("%Y-%m-%dT%H-%M-%S.log3")
-        .to_string()
-}
-
 async fn create_log3_writer(base_path: impl AsRef<Path>, date_time: DateTime) -> Result<FileJournalWriterLog3, std::io::Error> {
     let file = create_journal_file(base_path, datetime_to_log3_filename(date_time)).await?;
     JournalWriterLog3::new(BufWriter::new(file.compat_write())).await
-}
-
-#[repr(i32)]
-pub enum Log3IKey {
-    Time = 1,
-    Path,
-    Signal,
-    Source,
-    Value,
-    AccessLevel,
-    UserId,
-    Repeat,
-}
-
-
-pub fn journal_entry_to_log3_imap(entry: JournalEntry) -> IMap {
-    let time = match entry.epoch_msec {
-        ..=0 =>  None,
-        val => Some(DateTime::from_epoch_msec(val)),
-    };
-    make_imap!(
-        Log3IKey::Time as _ => time,
-        Log3IKey::Path as _ => entry.path,
-        Log3IKey::Signal as _ => entry.signal,
-        Log3IKey::Source as _ => entry.source,
-        Log3IKey::Value as _ => entry.value,
-        Log3IKey::AccessLevel as _ => entry.access_level,
-        Log3IKey::UserId as _ => entry.user_id,
-        Log3IKey::Repeat as _ => entry.repeat,
-    )
-}
-
-pub struct JournalWriterLog3<W> {
-    writer: W,
-}
-
-impl<W> JournalWriterLog3<W>
-where
-    W: AsyncWrite + Unpin,
-{
-    pub async fn new(mut writer: W) -> std::io::Result<Self> {
-        let header = RpcValue::from(make_map!("version" => 3.0)).to_cpon() + "\n";
-        Self::write_bytes(&mut writer, header.as_bytes()).await?;
-        Ok(Self {
-            writer,
-        })
-    }
-
-    pub async fn append(&mut self, entry: JournalEntry) -> std::io::Result<()> {
-        let line = RpcValue::from(journal_entry_to_log3_imap(entry)).to_cpon() + "\n";
-        Self::write_bytes(&mut self.writer, line.as_bytes()).await
-    }
-
-    async fn write_bytes(writer: &mut W, bytes: &[u8]) -> std::io::Result<()> {
-        writer.write_all(bytes).await?;
-        writer.flush().await
-    }
 }
