@@ -15,7 +15,7 @@ log = "0.4.29"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_yaml_ng = "0.10.0"
 sha1 = "0.11.0"
-shvclient = { version = "4.0", default-features = false }
+shvclient = { version = "5.0", default-features = false }
 shvrpc = { version = "15.0", features = ["journal"] }
 smol = { version = "2.0.2", optional = true }
 tokio = { version = "1.49.0", features = ["fs", "io-util"], optional = true }
@@ -32,7 +32,7 @@ smol = ["dep:smol", "shvclient/smol"]
 
 [dev-dependencies]
 tokio = { version = "1.49.0" }
-shvclient = { version = "4.0", features = ["tokio"] }
+shvclient = { version = "5.0", features = ["tokio"] }
 simple_logger = { version = "5.1.0", features = ["stderr"] }
 rand = "0.10.0"
 
