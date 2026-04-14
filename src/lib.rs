@@ -15,6 +15,7 @@ pub(crate) use shvclient::shvrpc::Result as ShvRpcResult;
 pub use shvclient;
 
 pub use self::tree::ShvTreeDefinition;
+pub use self::tree::NodeDescription;
 pub use self::data::JournalConfig;
 pub use self::data::GateContext;
 
