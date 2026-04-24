@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use futures::io::BufWriter;
 use shvclient::ClientCommandSender;
 use shvclient::clientnode::SIG_CHNG;
-use shvclient::shvproto::{DateTime, RpcValue};
+use shvclient::shvproto::{DateTime, IMap, RpcValue, make_imap};
 use shvrpc::datachange::ValueFlags;
 use shvrpc::journalentry::JournalEntry;
 use shvrpc::journalrw::{JournalWriterLog3, datetime_to_log3_filename};
@@ -220,6 +220,51 @@ impl GateContext {
     pub fn tree_definition(&self) -> &ShvTreeDefinition {
         &self.tree.definition
     }
+
+    pub fn get_snapshot_values(&self) -> Vec<(String, String, RpcValue)> {
+        self.tree
+            .cache
+            .iter()
+            .map(|(PathMethod(path, method), value)| {
+                let value = value
+                    .read()
+                    .expect("Tree cache value read should not fail")
+                    .0
+                    .as_ref()
+                    .map_or_else(RpcValue::null, RpcValue::clone);
+                (path.clone(), method.clone(), value)
+            })
+            .collect()
+    }
+}
+
+#[repr(i32)]
+pub enum SnapshotKey {
+    Timestamp = 1,
+    Path = 3,
+    // default: "chng"
+    Signal = 4,
+    Source = 5,
+    Value = 6,
+    // default: null
+    UserId = 7,
+    // default: false
+    Repeat = 8,
+}
+
+pub(crate) fn to_snapshot_entry(
+    ts: DateTime,
+    path: impl Into<String>,
+    method: impl Into<String>,
+    value: impl Into<RpcValue>,
+) -> IMap
+{
+    make_imap!(
+        SnapshotKey::Timestamp as _ => ts,
+        SnapshotKey::Path as _ => path.into(),
+        SnapshotKey::Source as _ => method.into(),
+        SnapshotKey::Value as _ => value.into(),
+    )
 }
 
 async fn trim_journal(journal_config: &JournalConfig, files_ext: &str, _: &mut JournalData) -> std::io::Result<()> {

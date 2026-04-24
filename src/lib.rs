@@ -18,6 +18,7 @@ pub use self::tree::ShvTreeDefinition;
 pub use self::tree::NodeDescription;
 pub use self::data::JournalConfig;
 pub use self::data::GateContext;
+pub use self::data::SnapshotKey;
 
 mod data;
 mod tree;
