@@ -4,12 +4,13 @@ use futures::future::BoxFuture;
 use shvclient::ClientCommandSender;
 use shvclient::appnodes::DOT_APP_METHODS;
 use shvclient::clientnode::{Method, RequestHandlerResult, SIG_CHNG, StaticNode, err_unresolved_request};
-use shvclient::shvproto::RpcValue;
+use shvclient::shvproto::{DateTime, RpcValue};
 use shvrpc::metamethod::{AccessLevel, MetaMethod, Flags as MetaMethodFlags};
 use shvrpc::rpcmessage::{RpcError, RpcErrorCode};
 use shvrpc::util::children_on_path;
 use shvrpc::{RpcMessage, RpcMessageMetaTags as _};
 
+use crate::data::to_snapshot_entry;
 use crate::fs::fs_request_handler;
 use crate::tree::method_has_signal;
 
@@ -23,6 +24,9 @@ pub(crate) async fn rpc_handler(
     // Root node methods
     const METH_VERSION: &str = "version";
     const METH_UPTIME: &str = "uptime";
+
+    // .history methods
+    const METH_GET_SNAPSHOT: &str = "getSnapshot";
 
     let path = rq.shv_path().map_or_else(String::new, String::from);
     let method = Method::from_request(&rq);
@@ -66,9 +70,26 @@ pub(crate) async fn rpc_handler(
             }
         }
         NodeType::DotHistory => {
+            const METHODS: &[MetaMethod] = &[
+                MetaMethod::new_static(METH_GET_SNAPSHOT, MetaMethodFlags::None, AccessLevel::Read, "Null", "List", &[], ""),
+            ];
             match method {
-                Method::Dir(dir) => dir.resolve(&[]),
-                Method::Ls(ls) => ls.resolve(&[], async move || Ok(vec![".files".into()])),
+                Method::Dir(dir) => dir.resolve(METHODS),
+                Method::Ls(ls) => ls.resolve(METHODS, async move || Ok(vec![".files".into()])),
+                Method::Other(m) if m.method() == METH_GET_SNAPSHOT => {
+                    m.resolve(METHODS, async move || {
+                        if param.is_some_and(|rv| !rv.is_null()) {
+                            return Err(RpcError::new(RpcErrorCode::InvalidParam, "This implementation of getSnapshot does not support any parameters."));
+                        }
+                        let ts = DateTime::now();
+                        let snapshot = gate_ctx.get_snapshot_values();
+                        Ok(snapshot
+                            .into_iter()
+                            .map(|(path, method, value)| to_snapshot_entry(ts, path, method, value))
+                            .collect::<Vec<_>>()
+                        )
+                    })
+                }
                 Method::Other(_) => err_unresolved_request(),
             }
         }
