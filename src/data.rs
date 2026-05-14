@@ -65,8 +65,8 @@ const CMDLOG: &str = "cmdlog";
 
 pub(crate) fn rpc_command_to_journal_entry(rq: &RpcMessage) -> JournalEntry {
     let user_id = rq
-        .tag(shvrpc::rpcmessage::Tag::UserId as i32)
-        .map_or_else(RpcValue::null, RpcValue::clone);
+        .user_id()
+        .map_or_else(String::new, String::from);
     let now = DateTime::now();
     let method = rq.method().unwrap_or_default();
     let value = format!("{method}({param})",
@@ -186,7 +186,7 @@ impl GateContext {
                     value,
                     access_level: AccessLevel::Read as _,
                     short_time: -1,
-                    user_id: ().into(),
+                    user_id: String::new(),
                     repeat: true,
                     provisional: false,
                 };
@@ -330,7 +330,7 @@ fn value_to_journal_entry(
         value: value.into(),
         access_level: AccessLevel::Read as _,
         short_time: -1,
-        user_id: ().into(),
+        user_id: String::new(),
         repeat,
         provisional: false
     }
