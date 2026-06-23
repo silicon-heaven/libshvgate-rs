@@ -82,6 +82,7 @@ pub(crate) fn rpc_command_to_journal_entry(rq: &RpcMessage) -> JournalEntry {
         repeat: false,
         provisional: false,
         epoch_msec: now.epoch_msec(),
+        epoch_msec_orig: None,
         short_time: -1,
     }
 }
@@ -180,6 +181,7 @@ impl GateContext {
                 };
                 let entry = JournalEntry {
                     epoch_msec: snapshot_msec,
+                    epoch_msec_orig: None,
                     path: path.into(),
                     signal: SIG_CHNG.into(),
                     source: method.into(),
@@ -324,6 +326,7 @@ fn value_to_journal_entry(
 {
     JournalEntry {
         epoch_msec: datetime.epoch_msec(),
+        epoch_msec_orig: None,
         path: path.into(),
         signal: signal.into(),
         source: method.into(),
